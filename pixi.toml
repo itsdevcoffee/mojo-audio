@@ -1,0 +1,36 @@
+[workspace]
+authors = ["itsdevcoffee <itstexmex@gmail.com>"]
+channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
+name = "mojo-audio"
+platforms = ["linux-64"]
+version = "0.1.0"
+description = "High-performance audio DSP library in Mojo - beats Python!"
+
+[tasks]
+# Testing
+test-window = "mojo -I src tests/test_window.mojo"
+test-fft = "mojo -I src tests/test_fft.mojo"
+test-mel = "mojo -I src tests/test_mel.mojo"
+test = "mojo -I src tests/test_window.mojo && mojo -I src tests/test_fft.mojo && mojo -I src tests/test_mel.mojo"
+
+# Examples
+demo-window = "mojo -I src examples/window_demo.mojo"
+demo-fft = "mojo -I src examples/fft_demo.mojo"
+demo-mel = "mojo -I src examples/mel_demo.mojo"
+demo = "mojo -I src examples/mel_demo.mojo"
+
+# Benchmarks
+bench = "mojo -I src benchmarks/bench_mel_spectrogram.mojo"
+bench-optimized = "mojo -O3 -I src benchmarks/bench_mel_spectrogram.mojo"
+bench-python = "python benchmarks/compare_librosa.py"
+
+# Development
+repl = "mojo"
+
+[dependencies]
+max = ">=26.1.0.dev2025123105,<27"
+mojo = ">=0.26.1.0.dev2025123105,<0.27"
+matplotlib = ">=3.10.8,<4"
+scipy = ">=1.16.3,<2"
+librosa = ">=0.11.0,<0.12"
+numba = ">=0.63.1,<0.64"
