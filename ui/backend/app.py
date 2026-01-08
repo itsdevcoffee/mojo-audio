@@ -25,11 +25,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve static files
-app.mount("/static", StaticFiles(directory="ui/static"), name="static")
-
 # Configuration
 REPO_ROOT = Path(__file__).parent.parent.parent
+UI_ROOT = Path(__file__).parent.parent
+
+# Serve static files (relative to ui directory)
+app.mount("/static", StaticFiles(directory=str(UI_ROOT / "static")), name="static")
 
 
 class BenchmarkConfig(BaseModel):
@@ -55,7 +56,7 @@ class BenchmarkResult(BaseModel):
 @app.get("/")
 async def root():
     """Serve the main UI."""
-    return FileResponse("ui/frontend/index.html")
+    return FileResponse(str(UI_ROOT / "frontend" / "index.html"))
 
 
 @app.post("/api/benchmark/mojo")
