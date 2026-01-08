@@ -95,8 +95,13 @@ async function runBenchmark() {
     }
 }
 
-// Display Results (Gemini's improved layout!)
+// Display Results (Gemini's improved layout - handles both win/loss!)
 function displayResults(results, config) {
+    // Determine actual winner
+    const mojoIsFaster = results.mojo.avg_time_ms < results.librosa.avg_time_ms;
+    const fasterPct = Math.abs(results.faster_percentage);
+    const winner = mojoIsFaster ? 'mojo-audio' : 'librosa';
+
     // Show all sections
     document.getElementById('heroResult').style.display = 'block';
     document.getElementById('comparisonGrid').style.display = 'grid';
@@ -104,9 +109,44 @@ function displayResults(results, config) {
     document.getElementById('chartCard').style.display = 'block';
     document.getElementById('actions').style.display = 'flex';
 
-    // HERO SECTION (most prominent!)
-    document.getElementById('heroNumber').textContent =
-        `${results.faster_percentage.toFixed(1)}%`;
+    // HERO SECTION (dynamic based on winner!)
+    document.getElementById('heroNumber').textContent = `${fasterPct.toFixed(1)}%`;
+
+    // Update hero text based on winner
+    const heroText = document.querySelector('.hero-text');
+    const heroBadge = document.querySelector('.hero-badge');
+    if (mojoIsFaster) {
+        heroText.textContent = 'faster than librosa';
+        heroBadge.textContent = 'mojo-audio wins';
+        heroBadge.style.background = 'linear-gradient(135deg, #f97316, #ea580c)';
+    } else {
+        heroText.textContent = 'slower than librosa';
+        heroBadge.textContent = 'librosa wins';
+        heroBadge.style.background = 'linear-gradient(135deg, #3b82f6, #2563eb)';
+    }
+
+    // Update card-level winner styling and badges
+    const librosaBadge = document.getElementById('librosaBadge');
+    const mojoBadge = document.getElementById('mojoBadge');
+    const librosaCard = document.getElementById('librosaCard');
+    const mojoCard = document.getElementById('mojoCard');
+
+    // Reset both cards
+    librosaCard.classList.remove('winner');
+    mojoCard.classList.remove('winner');
+    librosaBadge.style.display = 'none';
+    mojoBadge.style.display = 'none';
+
+    // Style the winner
+    if (mojoIsFaster) {
+        mojoCard.classList.add('winner');
+        mojoBadge.style.display = 'inline-block';
+        mojoBadge.style.background = 'linear-gradient(135deg, #f97316, #ea580c)';
+    } else {
+        librosaCard.classList.add('winner');
+        librosaBadge.style.display = 'inline-block';
+        librosaBadge.style.background = 'linear-gradient(135deg, #3b82f6, #2563eb)';
+    }
 
     // librosa results
     document.getElementById('librosaTime').textContent =
@@ -121,7 +161,6 @@ function displayResults(results, config) {
         `${Math.round(results.mojo.throughput_realtime)}× realtime`;
 
     // Progress bars (winner at 100%, loser scaled)
-    const mojoIsFaster = results.mojo.avg_time_ms < results.librosa.avg_time_ms;
     if (mojoIsFaster) {
         // mojo wins
         document.getElementById('mojoBar').style.width = '100%';
@@ -136,7 +175,7 @@ function displayResults(results, config) {
 
     // Stats
     document.getElementById('speedupFactor').textContent =
-        `${results.speedup_factor.toFixed(2)}×`;
+        `${Math.abs(results.speedup_factor).toFixed(2)}×`;
     document.getElementById('framesProcessed').textContent =
         '~2,998';
     document.getElementById('runsAveraged').textContent =

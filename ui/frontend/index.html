@@ -85,7 +85,7 @@
         <!-- COMPARISON with VS divider -->
         <div class="comparison-grid" id="comparisonGrid" style="display: none;">
             <!-- librosa -->
-            <div class="result-card">
+            <div class="result-card" id="librosaCard">
                 <div class="result-header">
                     <div class="result-title-group">
                         <span class="result-icon">🐍</span>
@@ -94,6 +94,7 @@
                             <div class="result-lang">Python</div>
                         </div>
                     </div>
+                    <span class="winner-badge" id="librosaBadge" style="display: none;">⚡ FASTER</span>
                 </div>
                 <div class="result-time" id="librosaTime">--</div>
                 <div class="result-throughput" id="librosaThroughput">--</div>
@@ -107,8 +108,8 @@
                 <div class="vs-circle">vs</div>
             </div>
 
-            <!-- mojo-audio (winner!) -->
-            <div class="result-card winner delay-1">
+            <!-- mojo-audio -->
+            <div class="result-card delay-1" id="mojoCard">
                 <div class="result-header">
                     <div class="result-title-group">
                         <span class="result-icon">🔥</span>
@@ -117,7 +118,7 @@
                             <div class="result-lang">Mojo</div>
                         </div>
                     </div>
-                    <span class="winner-badge">⚡ FASTER</span>
+                    <span class="winner-badge" id="mojoBadge" style="display: none;">⚡ FASTER</span>
                 </div>
                 <div class="result-time" id="mojoTime">--</div>
                 <div class="result-throughput" id="mojoThroughput">--</div>
