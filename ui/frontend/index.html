@@ -8,140 +8,150 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
+    <!-- Ambient background orbs -->
+    <div class="bg-orb bg-orb-1"></div>
+    <div class="bg-orb bg-orb-2"></div>
+
     <div class="container">
         <!-- Header -->
         <header class="header">
-            <div class="header-content">
-                <h1 class="title">
-                    <span class="emoji">🎵</span>
-                    <span class="gradient-text">mojo-audio</span>
-                </h1>
-                <p class="subtitle">Whisper Mel Spectrogram Benchmark</p>
-                <p class="tagline">High-performance audio DSP in Mojo that beats Python</p>
-            </div>
+            <h1 class="title">
+                <span class="emoji">🎵</span>
+                <span class="gradient-text">mojo-audio</span>
+            </h1>
+            <p class="subtitle">Whisper Mel Spectrogram Benchmark</p>
+            <p class="tagline">High-performance audio DSP in Mojo that beats Python</p>
         </header>
 
-        <!-- Configuration Card -->
-        <div class="card config-card">
-            <h2 class="card-title">Configuration</h2>
-
-            <div class="config-section">
-                <label class="config-label">Audio Duration</label>
-                <div class="radio-group">
-                    <label class="radio-pill">
-                        <input type="radio" name="duration" value="1">
-                        <span>1s</span>
-                    </label>
-                    <label class="radio-pill">
-                        <input type="radio" name="duration" value="10">
-                        <span>10s</span>
-                    </label>
-                    <label class="radio-pill" >
-                        <input type="radio" name="duration" value="30" checked>
-                        <span>30s</span>
-                    </label>
-                </div>
+        <!-- COMPACT HORIZONTAL CONFIG -->
+        <div class="glass-card config-card">
+            <div class="config-header" onclick="toggleConfig()">
+                <span class="config-title">Configuration</span>
+                <button class="collapse-btn" id="collapseBtn">−</button>
             </div>
 
-            <div class="config-section">
-                <label class="config-label">FFT Size</label>
-                <div class="radio-group">
-                    <label class="radio-pill">
-                        <input type="radio" name="fft_size" value="256">
-                        <span>256</span>
-                    </label>
-                    <label class="radio-pill">
-                        <input type="radio" name="fft_size" value="400" checked>
-                        <span>400 (Whisper)</span>
-                    </label>
-                    <label class="radio-pill">
-                        <input type="radio" name="fft_size" value="512">
-                        <span>512</span>
-                    </label>
+            <div class="config-content" id="configContent">
+                <!-- Duration -->
+                <div class="config-group">
+                    <label class="config-label">Duration</label>
+                    <div class="toggle-group">
+                        <button class="toggle-btn" onclick="selectDuration(1, this)">1s</button>
+                        <button class="toggle-btn" onclick="selectDuration(10, this)">10s</button>
+                        <button class="toggle-btn active" onclick="selectDuration(30, this)" id="duration30">30s</button>
+                    </div>
                 </div>
-            </div>
 
-            <div class="config-section">
-                <label class="config-label">Benchmark Runs</label>
-                <div class="number-input">
-                    <button class="number-btn" onclick="decrementRuns()">−</button>
-                    <input type="number" id="runs" value="5" min="1" max="20">
-                    <button class="number-btn" onclick="incrementRuns()">+</button>
+                <div class="divider"></div>
+
+                <!-- FFT Size -->
+                <div class="config-group">
+                    <label class="config-label">FFT Size</label>
+                    <div class="toggle-group">
+                        <button class="toggle-btn" onclick="selectFFT(256, this)">256</button>
+                        <button class="toggle-btn active" onclick="selectFFT(400, this)" id="fft400">400</button>
+                        <button class="toggle-btn" onclick="selectFFT(512, this)">512</button>
+                    </div>
                 </div>
-            </div>
 
-            <button class="primary-button" onclick="runBenchmark()" id="runBtn">
-                <span class="btn-icon">🚀</span>
-                <span>Run Benchmark</span>
-            </button>
+                <div class="divider"></div>
+
+                <!-- Runs -->
+                <div class="config-group">
+                    <label class="config-label">Runs</label>
+                    <div class="number-input">
+                        <button class="number-btn" onclick="decrementRuns()">−</button>
+                        <input type="number" id="runs" value="5" min="1" max="20" readonly>
+                        <button class="number-btn" onclick="incrementRuns()">+</button>
+                    </div>
+                </div>
+
+                <button class="primary-button" onclick="runBenchmark()" id="runBtn">
+                    <span>🚀</span>
+                    <span>Run Benchmark</span>
+                </button>
+            </div>
         </div>
 
-        <!-- Results Card -->
-        <div class="card results-card" id="resultsCard" style="display: none;">
-            <h2 class="card-title">Results</h2>
+        <!-- HERO RESULT (shows first, most prominent!) -->
+        <div class="hero-result hidden" id="heroResult">
+            <div class="hero-content">
+                <span class="hero-emoji">🔥</span>
+                <span class="hero-number" id="heroNumber">--</span>
+                <span class="hero-text">faster than librosa</span>
+                <span class="hero-badge">mojo-audio wins</span>
+            </div>
+        </div>
 
-            <div class="results-grid">
-                <!-- librosa Result -->
-                <div class="result-item">
-                    <div class="result-header">
+        <!-- COMPARISON with VS divider -->
+        <div class="comparison-grid hidden" id="comparisonGrid">
+            <!-- librosa -->
+            <div class="result-card">
+                <div class="result-header">
+                    <div class="result-title-group">
                         <span class="result-icon">🐍</span>
-                        <span class="result-name">librosa</span>
-                        <span class="result-lang">Python</span>
-                    </div>
-                    <div class="result-time" id="librosaTime">--</div>
-                    <div class="result-throughput" id="librosaThroughput">-- realtime</div>
-                    <div class="result-bar">
-                        <div class="bar-fill bar-librosa" id="librosaBar" style="width: 0%"></div>
+                        <div>
+                            <div class="result-name">librosa</div>
+                            <div class="result-lang">Python</div>
+                        </div>
                     </div>
                 </div>
+                <div class="result-time" id="librosaTime">--</div>
+                <div class="result-throughput" id="librosaThroughput">--</div>
+                <div class="result-bar">
+                    <div class="bar-fill bar-librosa" id="librosaBar"></div>
+                </div>
+            </div>
 
-                <!-- mojo-audio Result -->
-                <div class="result-item winner">
-                    <div class="result-header">
+            <!-- VS divider -->
+            <div class="vs-divider">
+                <div class="vs-circle">vs</div>
+            </div>
+
+            <!-- mojo-audio (winner!) -->
+            <div class="result-card winner delay-1">
+                <div class="result-header">
+                    <div class="result-title-group">
                         <span class="result-icon">🔥</span>
-                        <span class="result-name">mojo-audio</span>
-                        <span class="result-lang">Mojo</span>
+                        <div>
+                            <div class="result-name">mojo-audio</div>
+                            <div class="result-lang">Mojo</div>
+                        </div>
                     </div>
-                    <div class="result-time" id="mojoTime">--</div>
-                    <div class="result-throughput" id="mojoThroughput">-- realtime</div>
-                    <div class="result-bar">
-                        <div class="bar-fill bar-mojo" id="mojoBar" style="width: 0%"></div>
-                    </div>
+                    <span class="winner-badge">⚡ FASTER</span>
                 </div>
-            </div>
-
-            <!-- Comparison Stats -->
-            <div class="stats-grid">
-                <div class="stat-item">
-                    <div class="stat-value" id="speedupFactor">--</div>
-                    <div class="stat-label">Speedup Factor</div>
+                <div class="result-time" id="mojoTime">--</div>
+                <div class="result-throughput" id="mojoThroughput">--</div>
+                <div class="result-bar">
+                    <div class="bar-fill bar-mojo" id="mojoBar"></div>
                 </div>
-                <div class="stat-item highlight">
-                    <div class="stat-value" id="fasterPct">--</div>
-                    <div class="stat-label">Faster than librosa</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-value" id="framesProcessed">--</div>
-                    <div class="stat-label">Frames Processed</div>
-                </div>
-            </div>
-
-            <!-- Success Badge -->
-            <div class="success-badge" id="successBadge" style="display: none;">
-                <span class="badge-icon">🎉</span>
-                <span class="badge-text" id="badgeText">mojo-audio is faster!</span>
             </div>
         </div>
 
-        <!-- Optimization Journey Card -->
-        <div class="card chart-card" id="chartCard" style="display: none;">
-            <h2 class="card-title">Optimization Journey</h2>
-            <p class="card-subtitle">From 476ms to 12ms: A 40x speedup story</p>
+        <!-- STATS ROW -->
+        <div class="stats-row hidden" id="statsRow">
+            <div class="stat-card">
+                <div class="stat-value" id="speedupFactor">--</div>
+                <div class="stat-label">Speedup Factor</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="framesProcessed">--</div>
+                <div class="stat-label">Frames Processed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="runsAveraged">--</div>
+                <div class="stat-label">Runs Averaged</div>
+            </div>
+        </div>
+
+        <!-- OPTIMIZATION CHART (bigger!) -->
+        <div class="glass-card chart-card hidden" id="chartCard">
+            <h3 class="chart-title">Optimization Journey</h3>
+            <p class="chart-subtitle">From 476ms to 12ms — a 40× speedup story</p>
             <canvas id="optimizationChart"></canvas>
         </div>
 
         <!-- Actions -->
-        <div class="actions" id="actions" style="display: none;">
+        <div class="actions hidden" id="actions">
             <button class="secondary-button" onclick="downloadResults()">
                 <span>📥</span> Download Results
             </button>
@@ -151,11 +161,11 @@
         </div>
 
         <!-- Loading Overlay -->
-        <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+        <div class="loading-overlay hidden" id="loadingOverlay">
             <div class="loading-card">
                 <div class="spinner"></div>
                 <div class="loading-text">Running benchmarks...</div>
-                <div class="loading-subtext">This may take a few seconds</div>
+                <div class="loading-subtext">This may take 30-60 seconds</div>
             </div>
         </div>
     </div>

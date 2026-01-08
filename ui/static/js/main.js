@@ -1,13 +1,37 @@
-// mojo-audio Benchmark UI - JavaScript
-// Raycast-inspired smooth interactions
+// mojo-audio Benchmark UI - Glassmorphic Enhanced
+// Implements Gemini's UX improvements in Vanilla JS
 
 const API_BASE = 'http://localhost:8000/api';
 
 // UI State
+let selectedDuration = 30;
+let selectedFFT = 400;
 let benchmarkResults = null;
 let optimizationChart = null;
 
-// Helper Functions
+// Toggle Functions
+function selectDuration(duration, btn) {
+    selectedDuration = duration;
+    // Update active state
+    document.querySelectorAll('.toggle-group .toggle-btn').forEach(b => {
+        if (b.parentElement === btn.parentElement) {
+            b.classList.remove('active');
+        }
+    });
+    btn.classList.add('active');
+}
+
+function selectFFT(size, btn) {
+    selectedFFT = size;
+    // Update active state
+    document.querySelectorAll('.toggle-group .toggle-btn').forEach(b => {
+        if (b.parentElement === btn.parentElement) {
+            b.classList.remove('active');
+        }
+    });
+    btn.classList.add('active');
+}
+
 function incrementRuns() {
     const input = document.getElementById('runs');
     input.value = Math.min(parseInt(input.value) + 1, 20);
@@ -18,28 +42,24 @@ function decrementRuns() {
     input.value = Math.max(parseInt(input.value) - 1, 1);
 }
 
-function getSelectedDuration() {
-    return parseInt(document.querySelector('input[name="duration"]:checked').value);
-}
+function toggleConfig() {
+    const content = document.getElementById('configContent');
+    const btn = document.getElementById('collapseBtn');
 
-function getSelectedFFTSize() {
-    return parseInt(document.querySelector('input[name="fft_size"]:checked').value);
-}
-
-function getIterations() {
-    return parseInt(document.getElementById('runs').value);
+    content.classList.toggle('collapsed');
+    btn.classList.toggle('collapsed');
 }
 
 // Main Benchmark Function
 async function runBenchmark() {
     const config = {
-        duration: getSelectedDuration(),
-        n_fft: getSelectedFFTSize(),
-        iterations: getIterations()
+        duration: selectedDuration,
+        n_fft: selectedFFT,
+        iterations: parseInt(document.getElementById('runs').value)
     };
 
     // Show loading
-    document.getElementById('loadingOverlay').style.display = 'flex';
+    document.getElementById('loadingOverlay').classList.remove('hidden');
     document.getElementById('runBtn').disabled = true;
 
     try {
@@ -59,80 +79,82 @@ async function runBenchmark() {
         const results = await response.json();
         benchmarkResults = results;
 
-        // Display results with animation
+        // Display results with Gemini's improved UX
         displayResults(results, config);
+
+        // Auto-collapse config (optional)
+        // toggleConfig();
 
     } catch (error) {
         console.error('Benchmark error:', error);
-        alert('Benchmark failed. Make sure the backend is running!');
+        alert('Benchmark failed. Make sure the backend is running!\n\nError: ' + error.message);
     } finally {
         // Hide loading
-        document.getElementById('loadingOverlay').style.display = 'none';
+        document.getElementById('loadingOverlay').classList.add('hidden');
         document.getElementById('runBtn').disabled = false;
     }
 }
 
-// Display Results
+// Display Results (Gemini's improved layout!)
 function displayResults(results, config) {
-    const resultsCard = document.getElementById('resultsCard');
-    const chartCard = document.getElementById('chartCard');
-    const actions = document.getElementById('actions');
+    // Show all sections
+    document.getElementById('heroResult').classList.remove('hidden');
+    document.getElementById('comparisonGrid').classList.remove('hidden');
+    document.getElementById('statsRow').classList.remove('hidden');
+    document.getElementById('chartCard').classList.remove('hidden');
+    document.getElementById('actions').classList.remove('hidden');
 
-    // Show cards with fade-in
-    resultsCard.style.display = 'block';
-    chartCard.style.display = 'block';
-    actions.style.display = 'flex';
-
-    resultsCard.classList.add('fade-in');
-    chartCard.classList.add('fade-in');
+    // HERO SECTION (most prominent!)
+    document.getElementById('heroNumber').textContent =
+        `${results.faster_percentage.toFixed(1)}%`;
 
     // librosa results
     document.getElementById('librosaTime').textContent =
         `${results.librosa.avg_time_ms.toFixed(2)}ms`;
     document.getElementById('librosaThroughput').textContent =
-        `${Math.round(results.librosa.throughput_realtime)}x realtime`;
+        `${Math.round(results.librosa.throughput_realtime)}× realtime`;
 
     // mojo-audio results
     document.getElementById('mojoTime').textContent =
         `${results.mojo.avg_time_ms.toFixed(2)}ms`;
     document.getElementById('mojoThroughput').textContent =
-        `${Math.round(results.mojo.throughput_realtime)}x realtime`;
+        `${Math.round(results.mojo.throughput_realtime)}× realtime`;
 
-    // Animate progress bars
-    const maxTime = Math.max(results.librosa.avg_time_ms, results.mojo.avg_time_ms);
-    setTimeout(() => {
+    // Progress bars (winner at 100%, loser scaled)
+    const mojoIsFaster = results.mojo.avg_time_ms < results.librosa.avg_time_ms;
+    if (mojoIsFaster) {
+        // mojo wins
+        document.getElementById('mojoBar').style.width = '100%';
         document.getElementById('librosaBar').style.width =
-            `${(results.librosa.avg_time_ms / maxTime) * 100}%`;
+            `${(results.mojo.avg_time_ms / results.librosa.avg_time_ms) * 100}%`;
+    } else {
+        // librosa wins
+        document.getElementById('librosaBar').style.width = '100%';
         document.getElementById('mojoBar').style.width =
-            `${(results.mojo.avg_time_ms / maxTime) * 100}%`;
-    }, 100);
+            `${(results.librosa.avg_time_ms / results.mojo.avg_time_ms) * 100}%`;
+    }
 
     // Stats
     document.getElementById('speedupFactor').textContent =
-        `${results.speedup_factor}x`;
-    document.getElementById('fasterPct').textContent =
-        `${results.faster_percentage}%`;
+        `${results.speedup_factor.toFixed(2)}×`;
     document.getElementById('framesProcessed').textContent =
         '~2,998';
+    document.getElementById('runsAveraged').textContent =
+        config.iterations;
 
-    // Success badge
-    const badge = document.getElementById('successBadge');
-    if (results.mojo_is_faster) {
-        badge.style.display = 'flex';
-        document.getElementById('badgeText').textContent =
-            `mojo-audio is ${results.faster_percentage}% faster!`;
-    }
-
-    // Create optimization chart
+    // Create chart
     createOptimizationChart();
 
-    // Smooth scroll to results
+    // Smooth scroll to hero result
     setTimeout(() => {
-        resultsCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        document.getElementById('heroResult').scrollIntoView({
+            behavior: 'smooth',
+            block: 'center'
+        });
     }, 300);
 }
 
-// Create Optimization Journey Chart
+// Create Optimization Chart (enhanced with librosa baseline!)
 function createOptimizationChart() {
     const ctx = document.getElementById('optimizationChart');
 
@@ -143,13 +165,13 @@ function createOptimizationChart() {
     const optimizations = [
         { name: 'Naive', time: 476 },
         { name: 'Iterative FFT', time: 165 },
-        { name: '+ Twiddles', time: 97 },
-        { name: '+ Sparse', time: 78 },
-        { name: '+ Caching', time: 38 },
-        { name: '+ Float32', time: 34.4 },
-        { name: '+ True RFFT', time: 24 },
-        { name: '+ Parallel', time: 18 },
-        { name: '+ O3', time: 12 }
+        { name: '+Twiddles', time: 97 },
+        { name: '+Sparse', time: 78 },
+        { name: '+Caching', time: 38 },
+        { name: '+Float32', time: 34.4 },
+        { name: '+RFFT', time: 24 },
+        { name: '+Parallel', time: 18 },
+        { name: '+O3', time: 12 }
     ];
 
     optimizationChart = new Chart(ctx, {
@@ -158,25 +180,25 @@ function createOptimizationChart() {
             labels: optimizations.map(o => o.name),
             datasets: [
                 {
-                    label: 'Processing Time (ms)',
+                    label: 'mojo-audio (ms)',
                     data: optimizations.map(o => o.time),
-                    borderColor: '#FF8A5B',
-                    backgroundColor: 'rgba(255, 138, 91, 0.1)',
+                    borderColor: '#f97316',
+                    backgroundColor: 'rgba(249, 115, 22, 0.1)',
                     borderWidth: 3,
                     fill: true,
                     tension: 0.4,
-                    pointBackgroundColor: '#FF6B35',
+                    pointBackgroundColor: '#f97316',
                     pointBorderColor: '#FFFFFF',
                     pointBorderWidth: 2,
-                    pointRadius: 5,
-                    pointHoverRadius: 7
+                    pointRadius: 6,
+                    pointHoverRadius: 8
                 },
                 {
-                    label: 'librosa target',
+                    label: 'librosa baseline',
                     data: new Array(optimizations.length).fill(15),
-                    borderColor: '#60A5FA',
+                    borderColor: '#3b82f6',
                     borderWidth: 2,
-                    borderDash: [5, 5],
+                    borderDash: [8, 4],
                     fill: false,
                     pointRadius: 0
                 }
@@ -192,21 +214,22 @@ function createOptimizationChart() {
                     labels: {
                         font: {
                             size: 13,
-                            weight: '500'
+                            weight: '500',
+                            family: "'SF Mono', monospace"
                         },
-                        color: '#6B6B6B',
+                        color: '#666',
                         usePointStyle: true,
                         padding: 16
                     }
                 },
                 tooltip: {
-                    backgroundColor: '#FFFFFF',
-                    titleColor: '#1F1F1F',
-                    bodyColor: '#6B6B6B',
-                    borderColor: '#E5E5E5',
+                    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                    titleColor: '#1a1a1a',
+                    bodyColor: '#666',
+                    borderColor: '#e5e5e5',
                     borderWidth: 1,
                     padding: 12,
-                    cornerRadius: 8,
+                    cornerRadius: 10,
                     titleFont: {
                         size: 14,
                         weight: '600'
@@ -216,7 +239,10 @@ function createOptimizationChart() {
                     },
                     callbacks: {
                         label: function(context) {
-                            return `${context.parsed.y.toFixed(2)}ms`;
+                            if (context.datasetIndex === 0) {
+                                return `${context.parsed.y.toFixed(2)}ms`;
+                            }
+                            return 'librosa target: 15ms';
                         }
                     }
                 }
@@ -225,7 +251,7 @@ function createOptimizationChart() {
                 y: {
                     beginAtZero: true,
                     grid: {
-                        color: '#F3F4F6',
+                        color: 'rgba(0, 0, 0, 0.05)',
                         drawBorder: false
                     },
                     ticks: {
@@ -233,7 +259,7 @@ function createOptimizationChart() {
                             size: 12,
                             family: "'SF Mono', monospace"
                         },
-                        color: '#9CA3AF',
+                        color: '#999',
                         callback: function(value) {
                             return value + 'ms';
                         }
@@ -245,9 +271,10 @@ function createOptimizationChart() {
                     },
                     ticks: {
                         font: {
-                            size: 11
+                            size: 11,
+                            family: "'SF Mono', monospace"
                         },
-                        color: '#9CA3AF',
+                        color: '#999',
                         maxRotation: 45,
                         minRotation: 45
                     }
@@ -263,6 +290,11 @@ function downloadResults() {
 
     const data = {
         timestamp: new Date().toISOString(),
+        configuration: {
+            duration: selectedDuration,
+            fft_size: selectedFFT,
+            iterations: parseInt(document.getElementById('runs').value)
+        },
         results: benchmarkResults
     };
 
@@ -277,4 +309,5 @@ function downloadResults() {
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     console.log('mojo-audio benchmark UI loaded! 🔥');
+    console.log('Glassmorphic design with Gemini UX improvements');
 });
