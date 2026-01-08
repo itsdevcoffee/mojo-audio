@@ -27,6 +27,9 @@ bench-python = "python benchmarks/compare_librosa.py"
 # Development
 repl = "mojo"
 
+# UI
+ui = "cd ui/backend && python app.py"
+
 [dependencies]
 max = ">=26.1.0.dev2025123105,<27"
 mojo = ">=0.26.1.0.dev2025123105,<0.27"

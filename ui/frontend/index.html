@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mojo-audio Benchmark | Faster than Python</title>
+    <link rel="stylesheet" href="../static/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1 class="title">
+                    <span class="emoji">🎵</span>
+                    <span class="gradient-text">mojo-audio</span>
+                </h1>
+                <p class="subtitle">Whisper Mel Spectrogram Benchmark</p>
+                <p class="tagline">High-performance audio DSP in Mojo that beats Python</p>
+            </div>
+        </header>
+
+        <!-- Configuration Card -->
+        <div class="card config-card">
+            <h2 class="card-title">Configuration</h2>
+
+            <div class="config-section">
+                <label class="config-label">Audio Duration</label>
+                <div class="radio-group">
+                    <label class="radio-pill">
+                        <input type="radio" name="duration" value="1">
+                        <span>1s</span>
+                    </label>
+                    <label class="radio-pill">
+                        <input type="radio" name="duration" value="10">
+                        <span>10s</span>
+                    </label>
+                    <label class="radio-pill" >
+                        <input type="radio" name="duration" value="30" checked>
+                        <span>30s</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="config-section">
+                <label class="config-label">FFT Size</label>
+                <div class="radio-group">
+                    <label class="radio-pill">
+                        <input type="radio" name="fft_size" value="256">
+                        <span>256</span>
+                    </label>
+                    <label class="radio-pill">
+                        <input type="radio" name="fft_size" value="400" checked>
+                        <span>400 (Whisper)</span>
+                    </label>
+                    <label class="radio-pill">
+                        <input type="radio" name="fft_size" value="512">
+                        <span>512</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="config-section">
+                <label class="config-label">Benchmark Runs</label>
+                <div class="number-input">
+                    <button class="number-btn" onclick="decrementRuns()">−</button>
+                    <input type="number" id="runs" value="5" min="1" max="20">
+                    <button class="number-btn" onclick="incrementRuns()">+</button>
+                </div>
+            </div>
+
+            <button class="primary-button" onclick="runBenchmark()" id="runBtn">
+                <span class="btn-icon">🚀</span>
+                <span>Run Benchmark</span>
+            </button>
+        </div>
+
+        <!-- Results Card -->
+        <div class="card results-card" id="resultsCard" style="display: none;">
+            <h2 class="card-title">Results</h2>
+
+            <div class="results-grid">
+                <!-- librosa Result -->
+                <div class="result-item">
+                    <div class="result-header">
+                        <span class="result-icon">🐍</span>
+                        <span class="result-name">librosa</span>
+                        <span class="result-lang">Python</span>
+                    </div>
+                    <div class="result-time" id="librosaTime">--</div>
+                    <div class="result-throughput" id="librosaThroughput">-- realtime</div>
+                    <div class="result-bar">
+                        <div class="bar-fill bar-librosa" id="librosaBar" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <!-- mojo-audio Result -->
+                <div class="result-item winner">
+                    <div class="result-header">
+                        <span class="result-icon">🔥</span>
+                        <span class="result-name">mojo-audio</span>
+                        <span class="result-lang">Mojo</span>
+                    </div>
+                    <div class="result-time" id="mojoTime">--</div>
+                    <div class="result-throughput" id="mojoThroughput">-- realtime</div>
+                    <div class="result-bar">
+                        <div class="bar-fill bar-mojo" id="mojoBar" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Comparison Stats -->
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-value" id="speedupFactor">--</div>
+                    <div class="stat-label">Speedup Factor</div>
+                </div>
+                <div class="stat-item highlight">
+                    <div class="stat-value" id="fasterPct">--</div>
+                    <div class="stat-label">Faster than librosa</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="framesProcessed">--</div>
+                    <div class="stat-label">Frames Processed</div>
+                </div>
+            </div>
+
+            <!-- Success Badge -->
+            <div class="success-badge" id="successBadge" style="display: none;">
+                <span class="badge-icon">🎉</span>
+                <span class="badge-text" id="badgeText">mojo-audio is faster!</span>
+            </div>
+        </div>
+
+        <!-- Optimization Journey Card -->
+        <div class="card chart-card" id="chartCard" style="display: none;">
+            <h2 class="card-title">Optimization Journey</h2>
+            <p class="card-subtitle">From 476ms to 12ms: A 40x speedup story</p>
+            <canvas id="optimizationChart"></canvas>
+        </div>
+
+        <!-- Actions -->
+        <div class="actions" id="actions" style="display: none;">
+            <button class="secondary-button" onclick="downloadResults()">
+                <span>📥</span> Download Results
+            </button>
+            <a href="https://github.com/itsdevcoffee/mojo-audio" target="_blank" class="secondary-button">
+                <span>⭐</span> View on GitHub
+            </a>
+        </div>
+
+        <!-- Loading Overlay -->
+        <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+            <div class="loading-card">
+                <div class="spinner"></div>
+                <div class="loading-text">Running benchmarks...</div>
+                <div class="loading-subtext">This may take a few seconds</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="../static/js/main.js"></script>
+</body>
+</html>
