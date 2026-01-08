@@ -67,19 +67,18 @@ async def benchmark_mojo(config: BenchmarkConfig) -> BenchmarkResult:
     Returns performance metrics for the optimized Mojo implementation.
     """
     try:
-        # Run Mojo benchmark with -O3
+        # Use simple wrapper script for accurate results
         cmd = [
-            "mojo", "-O3", "-I", "src",
-            "benchmarks/bench_mel_spectrogram.mojo"
+            "python", "ui/backend/run_benchmark.py",
+            "mojo", str(config.duration), str(config.iterations)
         ]
 
-        start = time.perf_counter()
         result = subprocess.run(
             cmd,
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
-            timeout=60
+            timeout=120
         )
 
         if result.returncode != 0:
@@ -88,28 +87,8 @@ async def benchmark_mojo(config: BenchmarkConfig) -> BenchmarkResult:
                 detail=f"Mojo benchmark failed: {result.stderr}"
             )
 
-        # Parse output for 30s benchmark time
-        # Looking for: "Avg time:   12.2ms"
-        lines = result.stdout.split('\n')
-        avg_time = None
-
-        for i, line in enumerate(lines):
-            if f"Benchmarking {config.duration}" in line:
-                # Next few lines contain results
-                for j in range(i+1, min(i+5, len(lines))):
-                    if "Avg time:" in lines[j]:
-                        # Extract number
-                        parts = lines[j].split(":")
-                        if len(parts) > 1:
-                            time_str = parts[1].strip().split()[0]
-                            avg_time = float(time_str)
-                        break
-
-        if avg_time is None:
-            # Fallback: estimate from actual execution time
-            elapsed = (time.perf_counter() - start) * 1000
-            avg_time = elapsed / config.iterations
-
+        # Parse simple output (just the time in ms)
+        avg_time = float(result.stdout.strip())
         throughput = config.duration / (avg_time / 1000.0)
 
         return BenchmarkResult(
@@ -135,18 +114,18 @@ async def benchmark_librosa(config: BenchmarkConfig) -> BenchmarkResult:
     Returns performance metrics for Python's librosa.
     """
     try:
-        # Run Python librosa benchmark
+        # Use simple wrapper script for accurate results
         cmd = [
-            "python", "benchmarks/compare_librosa.py"
+            "python", "ui/backend/run_benchmark.py",
+            "librosa", str(config.duration), str(config.iterations)
         ]
 
-        start = time.perf_counter()
         result = subprocess.run(
             cmd,
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
-            timeout=60
+            timeout=120
         )
 
         if result.returncode != 0:
@@ -155,25 +134,8 @@ async def benchmark_librosa(config: BenchmarkConfig) -> BenchmarkResult:
                 detail=f"librosa benchmark failed: {result.stderr}"
             )
 
-        # Parse output for 30s benchmark time
-        lines = result.stdout.split('\n')
-        avg_time = None
-
-        for i, line in enumerate(lines):
-            if f"Benchmarking {config.duration}s" in line:
-                for j in range(i+1, min(i+5, len(lines))):
-                    if "Avg time:" in lines[j]:
-                        parts = lines[j].split(":")
-                        if len(parts) > 1:
-                            time_str = parts[1].strip().split("ms")[0]
-                            avg_time = float(time_str)
-                        break
-
-        if avg_time is None:
-            # Fallback
-            elapsed = (time.perf_counter() - start) * 1000
-            avg_time = elapsed / config.iterations
-
+        # Parse simple output (just the time in ms)
+        avg_time = float(result.stdout.strip())
         throughput = config.duration / (avg_time / 1000.0)
 
         return BenchmarkResult(
