@@ -59,7 +59,7 @@ async function runBenchmark() {
     };
 
     // Show loading
-    document.getElementById('loadingOverlay').classList.remove('hidden');
+    document.getElementById('loadingOverlay').style.display = 'flex';
     document.getElementById('runBtn').disabled = true;
 
     try {
@@ -90,7 +90,7 @@ async function runBenchmark() {
         alert('Benchmark failed. Make sure the backend is running!\n\nError: ' + error.message);
     } finally {
         // Hide loading
-        document.getElementById('loadingOverlay').classList.add('hidden');
+        document.getElementById('loadingOverlay').style.display = 'none';
         document.getElementById('runBtn').disabled = false;
     }
 }
@@ -98,11 +98,11 @@ async function runBenchmark() {
 // Display Results (Gemini's improved layout!)
 function displayResults(results, config) {
     // Show all sections
-    document.getElementById('heroResult').classList.remove('hidden');
-    document.getElementById('comparisonGrid').classList.remove('hidden');
-    document.getElementById('statsRow').classList.remove('hidden');
-    document.getElementById('chartCard').classList.remove('hidden');
-    document.getElementById('actions').classList.remove('hidden');
+    document.getElementById('heroResult').style.display = 'block';
+    document.getElementById('comparisonGrid').style.display = 'grid';
+    document.getElementById('statsRow').style.display = 'flex';
+    document.getElementById('chartCard').style.display = 'block';
+    document.getElementById('actions').style.display = 'flex';
 
     // HERO SECTION (most prominent!)
     document.getElementById('heroNumber').textContent =

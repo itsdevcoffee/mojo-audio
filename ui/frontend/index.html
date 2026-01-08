@@ -73,7 +73,7 @@
         </div>
 
         <!-- HERO RESULT (shows first, most prominent!) -->
-        <div class="hero-result hidden" id="heroResult">
+        <div class="hero-result" id="heroResult" style="display: none;">
             <div class="hero-content">
                 <span class="hero-emoji">🔥</span>
                 <span class="hero-number" id="heroNumber">--</span>
@@ -83,7 +83,7 @@
         </div>
 
         <!-- COMPARISON with VS divider -->
-        <div class="comparison-grid hidden" id="comparisonGrid">
+        <div class="comparison-grid" id="comparisonGrid" style="display: none;">
             <!-- librosa -->
             <div class="result-card">
                 <div class="result-header">
@@ -128,7 +128,7 @@
         </div>
 
         <!-- STATS ROW -->
-        <div class="stats-row hidden" id="statsRow">
+        <div class="stats-row" id="statsRow" style="display: none;">
             <div class="stat-card">
                 <div class="stat-value" id="speedupFactor">--</div>
                 <div class="stat-label">Speedup Factor</div>
@@ -144,14 +144,14 @@
         </div>
 
         <!-- OPTIMIZATION CHART (bigger!) -->
-        <div class="glass-card chart-card hidden" id="chartCard">
+        <div class="glass-card chart-card" id="chartCard" style="display: none;">
             <h3 class="chart-title">Optimization Journey</h3>
             <p class="chart-subtitle">From 476ms to 12ms — a 40× speedup story</p>
             <canvas id="optimizationChart"></canvas>
         </div>
 
         <!-- Actions -->
-        <div class="actions hidden" id="actions">
+        <div class="actions" id="actions" style="display: none;">
             <button class="secondary-button" onclick="downloadResults()">
                 <span>📥</span> Download Results
             </button>
@@ -161,7 +161,7 @@
         </div>
 
         <!-- Loading Overlay -->
-        <div class="loading-overlay hidden" id="loadingOverlay">
+        <div class="loading-overlay" id="loadingOverlay" style="display: none;">
             <div class="loading-card">
                 <div class="spinner"></div>
                 <div class="loading-text">Running benchmarks...</div>
