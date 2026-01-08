@@ -39,7 +39,7 @@ class BenchmarkConfig(BaseModel):
     n_fft: int = 400
     hop_length: int = 160
     n_mels: int = 80
-    iterations: int = 3
+    iterations: int = 10  # Increased for better statistical confidence
 
 
 class BenchmarkResult(BaseModel):

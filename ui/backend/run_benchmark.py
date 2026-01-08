@@ -20,24 +20,33 @@ def benchmark_mojo_single(duration_s: int, iterations: int = 3, n_fft: int = 400
     mojo_code = f"""
 from audio import mel_spectrogram
 from time import perf_counter_ns
+from random import random_float64
 
 fn main() raises:
-    # Create {duration_s}s audio
+    # Create {duration_s}s audio (random data like librosa!)
     var audio = List[Float32]()
     for _ in range({duration_s * 16000}):
-        audio.append(0.1)
+        audio.append(Float32(random_float64(0.0, 0.1)))
 
     # Warmup with specified parameters
     _ = mel_spectrogram(audio, n_fft={n_fft}, hop_length={hop_length}, n_mels={n_mels})
 
-    # Benchmark with specified parameters
-    var start = perf_counter_ns()
+    # Benchmark with specified parameters - collect per-iteration times
+    var times = List[Float64]()
     for _ in range({iterations}):
-        _ = mel_spectrogram(audio, n_fft={n_fft}, hop_length={hop_length}, n_mels={n_mels})
-    var end = perf_counter_ns()
+        var iter_start = perf_counter_ns()
+        var result = mel_spectrogram(audio, n_fft={n_fft}, hop_length={hop_length}, n_mels={n_mels})
+        var iter_end = perf_counter_ns()
+        times.append(Float64(iter_end - iter_start) / 1_000_000.0)
 
-    var avg_ns = (end - start) / {iterations}
-    var avg_ms = Float64(avg_ns) / 1_000_000.0
+        # Use result to prevent dead code elimination
+        var checksum = result[0][0]
+
+    # Calculate statistics
+    var sum_times: Float64 = 0.0
+    for i in range(len(times)):
+        sum_times += times[i]
+    var avg_ms = sum_times / Float64(len(times))
 
     print(avg_ms)
 """
@@ -46,9 +55,10 @@ fn main() raises:
     with open('/tmp/mojo_bench_temp.mojo', 'w') as f:
         f.write(mojo_code)
 
-    # Run with -O3 using pixi (mojo is in pixi environment)
+    # Run with -O3 using pixi (ensures environment is set correctly)
+    # The -- separator ensures -O3 is passed to mojo, not pixi
     result = subprocess.run(
-        ['pixi', 'run', '-e', 'default', 'mojo', '-O3', '-I', 'src', '/tmp/mojo_bench_temp.mojo'],
+        ['pixi', 'run', '--', 'mojo', '-O3', '-I', 'src', '/tmp/mojo_bench_temp.mojo'],
         capture_output=True,
         text=True,
         cwd='/home/maskkiller/dev-coffee/repos/mojo-audio'
