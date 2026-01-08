@@ -67,10 +67,15 @@ async def benchmark_mojo(config: BenchmarkConfig) -> BenchmarkResult:
     Returns performance metrics for the optimized Mojo implementation.
     """
     try:
-        # Use simple wrapper script for accurate results
+        # Use simple wrapper script with ALL user parameters
         cmd = [
             "python", "ui/backend/run_benchmark.py",
-            "mojo", str(config.duration), str(config.iterations)
+            "mojo",
+            str(config.duration),
+            str(config.iterations),
+            str(config.n_fft),
+            str(config.hop_length),
+            str(config.n_mels)
         ]
 
         result = subprocess.run(
@@ -114,10 +119,15 @@ async def benchmark_librosa(config: BenchmarkConfig) -> BenchmarkResult:
     Returns performance metrics for Python's librosa.
     """
     try:
-        # Use simple wrapper script for accurate results
+        # Use simple wrapper script with ALL user parameters
         cmd = [
             "python", "ui/backend/run_benchmark.py",
-            "librosa", str(config.duration), str(config.iterations)
+            "librosa",
+            str(config.duration),
+            str(config.iterations),
+            str(config.n_fft),
+            str(config.hop_length),
+            str(config.n_mels)
         ]
 
         result = subprocess.run(

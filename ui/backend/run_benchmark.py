@@ -8,15 +8,15 @@ import sys
 import numpy as np
 import time
 
-def benchmark_mojo_single(duration_s: int, iterations: int = 3):
+def benchmark_mojo_single(duration_s: int, iterations: int = 3, n_fft: int = 400, hop_length: int = 160, n_mels: int = 80):
     """
-    Run mojo mel_spectrogram benchmark for specific duration.
+    Run mojo mel_spectrogram benchmark for specific duration and parameters.
 
     Returns: average time in milliseconds
     """
     import subprocess
 
-    # Create simple Mojo script that benchmarks the requested duration
+    # Create simple Mojo script that benchmarks with specified parameters
     mojo_code = f"""
 from audio import mel_spectrogram
 from time import perf_counter_ns
@@ -27,13 +27,13 @@ fn main() raises:
     for _ in range({duration_s * 16000}):
         audio.append(0.1)
 
-    # Warmup
-    _ = mel_spectrogram(audio)
+    # Warmup with specified parameters
+    _ = mel_spectrogram(audio, n_fft={n_fft}, hop_length={hop_length}, n_mels={n_mels})
 
-    # Benchmark
+    # Benchmark with specified parameters
     var start = perf_counter_ns()
     for _ in range({iterations}):
-        _ = mel_spectrogram(audio)
+        _ = mel_spectrogram(audio, n_fft={n_fft}, hop_length={hop_length}, n_mels={n_mels})
     var end = perf_counter_ns()
 
     var avg_ns = (end - start) / {iterations}
@@ -46,9 +46,9 @@ fn main() raises:
     with open('/tmp/mojo_bench_temp.mojo', 'w') as f:
         f.write(mojo_code)
 
-    # Run with -O3
+    # Run with -O3 using pixi (mojo is in pixi environment)
     result = subprocess.run(
-        ['mojo', '-O3', '-I', 'src', '/tmp/mojo_bench_temp.mojo'],
+        ['pixi', 'run', '-e', 'default', 'mojo', '-O3', '-I', 'src', '/tmp/mojo_bench_temp.mojo'],
         capture_output=True,
         text=True,
         cwd='/home/maskkiller/dev-coffee/repos/mojo-audio'
@@ -65,9 +65,9 @@ fn main() raises:
         return None
 
 
-def benchmark_librosa_single(duration_s: int, iterations: int = 3):
+def benchmark_librosa_single(duration_s: int, iterations: int = 3, n_fft: int = 400, hop_length: int = 160, n_mels: int = 80):
     """
-    Run librosa mel_spectrogram benchmark for specific duration.
+    Run librosa mel_spectrogram benchmark for specific duration and parameters.
 
     Returns: average time in milliseconds
     """
@@ -81,18 +81,16 @@ def benchmark_librosa_single(duration_s: int, iterations: int = 3):
     sr = 16000
     audio = np.random.rand(duration_s * sr).astype(np.float32) * 0.1
 
-    # Whisper parameters
-    n_fft = 400
-    hop_length = 160
-    n_mels = 80
+    # Use specified parameters
+    # (n_fft, hop_length, n_mels passed as arguments)
 
-    # Warmup
+    # Warmup with specified parameters
     _ = librosa.feature.melspectrogram(
         y=audio, sr=sr, n_fft=n_fft,
         hop_length=hop_length, n_mels=n_mels
     )
 
-    # Benchmark
+    # Benchmark with specified parameters
     times = []
     for _ in range(iterations):
         start = time.perf_counter()
@@ -108,17 +106,20 @@ def benchmark_librosa_single(duration_s: int, iterations: int = 3):
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: run_benchmark.py <implementation> <duration>")
+        print("Usage: run_benchmark.py <implementation> <duration> [iterations] [n_fft] [hop_length] [n_mels]")
         sys.exit(1)
 
     implementation = sys.argv[1]  # "mojo" or "librosa"
     duration = int(sys.argv[2])
     iterations = int(sys.argv[3]) if len(sys.argv) > 3 else 3
+    n_fft = int(sys.argv[4]) if len(sys.argv) > 4 else 400
+    hop_length = int(sys.argv[5]) if len(sys.argv) > 5 else 160
+    n_mels = int(sys.argv[6]) if len(sys.argv) > 6 else 80
 
     if implementation == "mojo":
-        result = benchmark_mojo_single(duration, iterations)
+        result = benchmark_mojo_single(duration, iterations, n_fft, hop_length, n_mels)
     elif implementation == "librosa":
-        result = benchmark_librosa_single(duration, iterations)
+        result = benchmark_librosa_single(duration, iterations, n_fft, hop_length, n_mels)
     else:
         print(f"Unknown implementation: {implementation}", file=sys.stderr)
         sys.exit(1)
