@@ -8,9 +8,11 @@ import sys
 import numpy as np
 import time
 
-def benchmark_mojo_single(duration_s: int, iterations: int = 3, n_fft: int = 400, hop_length: int = 160, n_mels: int = 80):
+def benchmark_mojo_single(duration_s: int, iterations: int = 20, n_fft: int = 400, hop_length: int = 160, n_mels: int = 80):
     """
     Run mojo mel_spectrogram benchmark for specific duration and parameters.
+
+    Uses random seed=42 for reproducibility (same as librosa).
 
     Returns: average time in milliseconds
     """
@@ -20,10 +22,11 @@ def benchmark_mojo_single(duration_s: int, iterations: int = 3, n_fft: int = 400
     mojo_code = f"""
 from audio import mel_spectrogram
 from time import perf_counter_ns
-from random import random_float64
+from random import seed, random_float64
 
 fn main() raises:
-    # Create {duration_s}s audio (random data like librosa!)
+    # Generate random audio with FIXED SEED (same data as librosa!)
+    seed(42)  # Reproducible random data
     var audio = List[Float32]()
     for _ in range({duration_s * 16000}):
         audio.append(Float32(random_float64(0.0, 0.1)))
@@ -75,9 +78,11 @@ fn main() raises:
         return None
 
 
-def benchmark_librosa_single(duration_s: int, iterations: int = 3, n_fft: int = 400, hop_length: int = 160, n_mels: int = 80):
+def benchmark_librosa_single(duration_s: int, iterations: int = 20, n_fft: int = 400, hop_length: int = 160, n_mels: int = 80):
     """
     Run librosa mel_spectrogram benchmark for specific duration and parameters.
+
+    Uses random seed=42 for reproducibility (same as mojo).
 
     Returns: average time in milliseconds
     """
@@ -87,8 +92,9 @@ def benchmark_librosa_single(duration_s: int, iterations: int = 3, n_fft: int = 
         print("librosa not available", file=sys.stderr)
         return None
 
-    # Create test audio
+    # Create test audio with FIXED SEED (same data as mojo!)
     sr = 16000
+    np.random.seed(42)  # Reproducible random data
     audio = np.random.rand(duration_s * sr).astype(np.float32) * 0.1
 
     # Use specified parameters

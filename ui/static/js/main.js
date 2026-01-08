@@ -34,7 +34,7 @@ function selectFFT(size, btn) {
 
 function incrementRuns() {
     const input = document.getElementById('runs');
-    input.value = Math.min(parseInt(input.value) + 1, 20);
+    input.value = Math.min(parseInt(input.value) + 1, 30);
 }
 
 function decrementRuns() {
