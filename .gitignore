@@ -1,0 +1,9 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# Mojo compiler traces
+*.trace.json*
+kgen.trace.*
+
+docs/tmp
