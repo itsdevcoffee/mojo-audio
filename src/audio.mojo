@@ -15,8 +15,8 @@ from sys.info import num_physical_cores
 # Type Configuration (Float32 for 2x SIMD throughput!)
 # ==============================================================================
 
-alias AudioFloat = DType.float32  # Audio processing uses Float32
-alias SIMD_WIDTH = 16  # Float32: 16 elements (vs Float64: 8 elements)
+comptime AudioFloat = DType.float32  # Audio processing uses Float32
+comptime SIMD_WIDTH = 16  # Float32: 16 elements (vs Float64: 8 elements)
 
 fn pow_f32(base: Float32, exponent: Float32) -> Float32:
     """Power function for Float32."""
