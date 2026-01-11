@@ -30,6 +30,18 @@ repl = "mojo"
 # UI
 ui = "cd ui/backend && python app.py"
 
+# FFI - Build shared library for C/Rust/Python integration
+build-ffi = "mojo build --emit shared-lib -I src -o libmojo_audio.so src/ffi/audio_ffi.mojo"
+build-ffi-optimized = "mojo build --emit shared-lib -O3 -I src -o libmojo_audio.so src/ffi/audio_ffi.mojo"
+install-ffi = """
+    mkdir -p $HOME/.local/lib &&
+    cp libmojo_audio.so $HOME/.local/lib/ &&
+    mkdir -p $HOME/.local/include &&
+    cp include/mojo_audio.h $HOME/.local/include/ &&
+    echo 'FFI library installed to ~/.local/lib and ~/.local/include'
+"""
+clean-ffi = "rm -f libmojo_audio.so"
+
 [dependencies]
 max = ">=26.1.0.dev2025123105,<27"
 mojo = ">=0.26.1.0.dev2025123105,<0.27"

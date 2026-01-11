@@ -7,3 +7,18 @@
 kgen.trace.*
 
 docs/tmp
+
+# FFI build artifacts
+*.so
+*.a
+*.o
+test_*
+!tests/
+
+# Prompt/handoff documents
+*HANDOFF*.md
+*PROMPT*.md
+*DEBUG*.md
+REVISED_*.md
+SOLUTION_*.md
+FIX_*.md
