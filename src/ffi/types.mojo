@@ -1,8 +1,9 @@
 """
-FFI type definitions for mojo-audio.
-"""
+FFI type definitions for mojo-audio C interop.
 
-from memory import UnsafePointer
+Structs here must maintain exact C ABI compatibility.
+See docs/context/01-11-2026-mojo-ffi-constraints.md for constraints.
+"""
 
 
 @register_passable("trivial")
@@ -37,7 +38,7 @@ struct MojoMelSpectrogram(Copyable, Movable):
     var n_mels: Int
     var n_frames: Int
 
-    fn __init__(out self, owned data: List[Float32], n_mels: Int, n_frames: Int):
+    fn __init__(out self, var data: List[Float32], n_mels: Int, n_frames: Int):
         """Create mel spectrogram with data and dimensions."""
         self.data = data^
         self.n_mels = n_mels
