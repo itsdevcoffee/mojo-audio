@@ -127,7 +127,7 @@ fn log2_int(n: Int) -> Int:
 # ------------------------------------------------------------------------------
 
 fn hann_window(size: Int) -> List[Float32]:
-    """Generate Hann window: w(n) = 0.5 * (1 - cos(2π * n / (N-1)))"""
+    """Generate Hann window: w(n) = 0.5 * (1 - cos(2π * n / (N-1)))."""
     var window = List[Float32]()
     var N = Float32(size - 1)
 
@@ -139,7 +139,7 @@ fn hann_window(size: Int) -> List[Float32]:
     return window^
 
 fn hamming_window(size: Int) -> List[Float32]:
-    """Generate Hamming window: w(n) = 0.54 - 0.46 * cos(2π * n / (N-1))"""
+    """Generate Hamming window: w(n) = 0.54 - 0.46 * cos(2π * n / (N-1))."""
     var window = List[Float32]()
     var N = Float32(size - 1)
 
@@ -208,7 +208,7 @@ fn precompute_twiddle_factors(N: Int) -> List[Complex]:
     return twiddles^
 
 fn fft_radix4(signal: List[Float32], twiddles: List[Complex]) raises -> List[Complex]:
-    """Radix-4 FFT - faster than Radix-2!"""
+    """Radix-4 FFT - faster than Radix-2."""
     var N = len(signal)
     var log2_n = log2_int(N)
 
@@ -325,7 +325,7 @@ fn fft_iterative_with_twiddles(
         return result^
 
 fn rfft_true(signal: List[Float32], twiddles: List[Complex]) raises -> List[Complex]:
-    """TRUE Real FFT - exploits conjugate symmetry for 2x speedup!"""
+    """TRUE Real FFT - exploits conjugate symmetry for 2x speedup."""
     var N = len(signal)
     var fft_size = next_power_of_2(N)
     var half_size = fft_size // 2
@@ -368,7 +368,7 @@ fn rfft_with_twiddles(
     signal: List[Float32],
     twiddles: List[Complex]
 ) raises -> List[Complex]:
-    """TRUE RFFT using cached twiddles - 2x faster!"""
+    """TRUE RFFT using cached twiddles - 2x faster."""
     return rfft_true(signal, twiddles)
 
 fn power_spectrum(fft_output: List[Complex]) -> List[Float32]:
@@ -809,17 +809,14 @@ fn mojo_mel_spectrogram_get_shape(
     if handle <= 0:
         return MOJO_AUDIO_ERROR_INVALID_HANDLE
 
-    try:
-        var mel_ptr = _handle_to_ptr(handle)
+    var mel_ptr = _handle_to_ptr(handle)
 
-        if out_n_mels:
-            out_n_mels[0] = UInt64(mel_ptr[].n_mels)
-        if out_n_frames:
-            out_n_frames[0] = UInt64(mel_ptr[].n_frames)
+    if out_n_mels:
+        out_n_mels[0] = UInt64(mel_ptr[].n_mels)
+    if out_n_frames:
+        out_n_frames[0] = UInt64(mel_ptr[].n_frames)
 
-        return MOJO_AUDIO_SUCCESS
-    except:
-        return MOJO_AUDIO_ERROR_INVALID_HANDLE
+    return MOJO_AUDIO_SUCCESS
 
 @export("mojo_mel_spectrogram_free", ABI="C")
 fn mojo_mel_spectrogram_free(handle: Int64):
@@ -827,13 +824,9 @@ fn mojo_mel_spectrogram_free(handle: Int64):
     if handle <= 0:
         return
 
-    try:
-        var mel_ptr = _handle_to_ptr(handle)
-        # Destructor will be called automatically when pointer is freed
-        mel_ptr.free()
-    except:
-        # Silently ignore errors in free
-        pass
+    var mel_ptr = _handle_to_ptr(handle)
+    # Destructor will be called automatically when pointer is freed
+    mel_ptr.free()
 
 @export("mojo_audio_last_error", ABI="C")
 fn mojo_audio_last_error() -> UnsafePointer[mut=False, UInt8, ImmutOrigin.external]:
@@ -846,11 +839,8 @@ fn mojo_mel_spectrogram_get_size(handle: Int64) -> UInt64:
     if handle <= 0:
         return 0
 
-    try:
-        var mel_ptr = _handle_to_ptr(handle)
-        return UInt64(mel_ptr[].n_mels * mel_ptr[].n_frames)
-    except:
-        return 0
+    var mel_ptr = _handle_to_ptr(handle)
+    return UInt64(mel_ptr[].n_mels * mel_ptr[].n_frames)
 
 @export("mojo_mel_spectrogram_get_data", ABI="C")
 fn mojo_mel_spectrogram_get_data(
@@ -862,20 +852,17 @@ fn mojo_mel_spectrogram_get_data(
     if handle <= 0:
         return MOJO_AUDIO_ERROR_INVALID_HANDLE
 
-    try:
-        var mel_ptr = _handle_to_ptr(handle)
+    var mel_ptr = _handle_to_ptr(handle)
 
-        var total_size = mel_ptr[].n_mels * mel_ptr[].n_frames
-        if UInt64(total_size) > buffer_size:
-            return MOJO_AUDIO_ERROR_BUFFER_SIZE
+    var total_size = mel_ptr[].n_mels * mel_ptr[].n_frames
+    if UInt64(total_size) > buffer_size:
+        return MOJO_AUDIO_ERROR_BUFFER_SIZE
 
-        # Copy data to output buffer
-        for i in range(total_size):
-            out_buffer[i] = mel_ptr[].data[i]
+    # Copy data to output buffer
+    for i in range(total_size):
+        out_buffer[i] = mel_ptr[].data[i]
 
-        return MOJO_AUDIO_SUCCESS
-    except:
-        return MOJO_AUDIO_ERROR_INVALID_HANDLE
+    return MOJO_AUDIO_SUCCESS
 
 @export("mojo_mel_spectrogram_is_valid", ABI="C")
 fn mojo_mel_spectrogram_is_valid(handle: Int64) -> Int32:
