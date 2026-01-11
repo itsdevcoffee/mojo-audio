@@ -1,4 +1,20 @@
-"""Progressive test - add functions one by one"""
+"""
+Mojo Audio FFI - C-compatible mel spectrogram computation.
+
+CRITICAL: This is production FFI code. See docs/context/01-11-2026-mojo-ffi-constraints.md
+before making ANY changes.
+
+Structure:
+  Lines 20-683:  Inlined audio processing (mel_spectrogram_ffi + dependencies)
+  Lines 684+:    FFI exports (handle-based C API)
+
+Constraints (DO NOT VIOLATE):
+  - CANNOT import from audio.mojo (crashes in shared lib context)
+  - CANNOT use Int for FFI boundaries (use Int32/Int64/UInt64)
+  - CANNOT return structs by value (use output pointers)
+  - MUST use handle-based API with Int64 handles
+  - MUST keep origin parameters on UnsafePointer types
+"""
 
 from math import cos, sqrt, log, sin, exp
 from math.constants import pi
@@ -18,8 +34,12 @@ from ffi.types import (
 
 
 # ==============================================================================
-# Inlined Audio Processing Functions (from audio.mojo)
-# Required for FFI - can't call imported module in shared lib context
+# INLINED AUDIO PROCESSING (from audio.mojo)
+# ==============================================================================
+# WARNING: This code MUST be inlined - importing from audio.mojo causes segfault
+# in shared library context. DO NOT refactor to use imports.
+#
+# Processing pipeline: audio samples -> STFT -> mel filterbank -> log scaling
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -684,16 +704,25 @@ fn mel_spectrogram_ffi(
 
 
 # ==============================================================================
-# Handle Management - Handles are just pointer addresses cast to Int32
+# FFI EXPORTS (C API)
+# ==============================================================================
+# Handle-based API: Pointers are cast to Int64 handles to avoid nested pointer
+# types which Mojo cannot infer origins for.
+#
+# CRITICAL: Do not change:
+#   - Function signatures (breaks C ABI)
+#   - Type choices (Int32/Int64/UInt64 are required for ABI compatibility)
+#   - Origin parameters on UnsafePointer types
 # ==============================================================================
 
 @always_inline
 fn _ptr_to_handle[T: AnyType](ptr: UnsafePointer[T]) -> Int64:
-    var addr = Int(ptr)
-    return Int64(addr)
+    """Convert heap pointer to Int64 handle for C interop."""
+    return Int64(Int(ptr))
 
 @always_inline
 fn _handle_to_ptr(handle: Int64) -> UnsafePointer[mut=True, MojoMelSpectrogram, MutOrigin.external]:
+    """Convert Int64 handle back to MojoMelSpectrogram pointer."""
     return UnsafePointer[mut=True, MojoMelSpectrogram, MutOrigin.external](
         unsafe_from_address=Int(handle)
     )
@@ -704,12 +733,14 @@ fn mojo_audio_version(
     minor: UnsafePointer[mut=True, Int32, MutAnyOrigin],
     patch: UnsafePointer[mut=True, Int32, MutAnyOrigin]
 ):
+    """Get library version (currently 0.1.0)."""
     major[0] = 0
     minor[0] = 1
     patch[0] = 0
 
 @export("mojo_mel_config_default", ABI="C")
 fn mojo_mel_config_default(out_config: UnsafePointer[mut=True, MojoMelConfig, MutAnyOrigin]):
+    """Write default Whisper-compatible config to output pointer."""
     out_config[0] = MojoMelConfig()
 
 @export("mojo_mel_spectrogram_compute", ABI="C")
@@ -718,7 +749,11 @@ fn mojo_mel_spectrogram_compute(
     num_samples: UInt64,
     config: UnsafePointer[mut=False, MojoMelConfig, ImmutAnyOrigin]
 ) -> Int64:
-    # Validate inputs
+    """
+    Compute mel spectrogram from audio samples.
+    Returns: Int64 handle (positive) on success, negative error code on failure.
+    Caller must free result with mojo_mel_spectrogram_free().
+    """
     if num_samples <= 0:
         return Int64(MOJO_AUDIO_ERROR_INVALID_INPUT)
 
@@ -770,6 +805,7 @@ fn mojo_mel_spectrogram_get_shape(
     out_n_mels: UnsafePointer[mut=True, UInt64, MutAnyOrigin],
     out_n_frames: UnsafePointer[mut=True, UInt64, MutAnyOrigin]
 ) -> Int32:
+    """Get dimensions: n_mels (typically 80) and n_frames (time axis)."""
     if handle <= 0:
         return MOJO_AUDIO_ERROR_INVALID_HANDLE
 
@@ -801,10 +837,12 @@ fn mojo_mel_spectrogram_free(handle: Int64):
 
 @export("mojo_audio_last_error", ABI="C")
 fn mojo_audio_last_error() -> UnsafePointer[mut=False, UInt8, ImmutOrigin.external]:
+    """Get last error message (currently returns null - reserved for future use)."""
     return UnsafePointer[mut=False, UInt8, ImmutOrigin.external](unsafe_from_address=0)
 
 @export("mojo_mel_spectrogram_get_size", ABI="C")
 fn mojo_mel_spectrogram_get_size(handle: Int64) -> UInt64:
+    """Get total element count (n_mels * n_frames) for buffer allocation."""
     if handle <= 0:
         return 0
 
@@ -820,6 +858,7 @@ fn mojo_mel_spectrogram_get_data(
     out_buffer: UnsafePointer[mut=True, Float32, MutAnyOrigin],
     buffer_size: UInt64
 ) -> Int32:
+    """Copy mel spectrogram data to caller-provided buffer (row-major layout)."""
     if handle <= 0:
         return MOJO_AUDIO_ERROR_INVALID_HANDLE
 
@@ -840,4 +879,5 @@ fn mojo_mel_spectrogram_get_data(
 
 @export("mojo_mel_spectrogram_is_valid", ABI="C")
 fn mojo_mel_spectrogram_is_valid(handle: Int64) -> Int32:
+    """Check if handle is valid (non-negative, not an error code)."""
     return 1 if handle > 0 else 0
