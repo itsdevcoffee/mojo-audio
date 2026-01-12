@@ -28,7 +28,11 @@ from ffi.types import (
     MOJO_AUDIO_ERROR_INVALID_INPUT,
     MOJO_AUDIO_ERROR_INVALID_HANDLE,
     MOJO_AUDIO_ERROR_PROCESSING,
-    MOJO_AUDIO_ERROR_BUFFER_SIZE
+    MOJO_AUDIO_ERROR_BUFFER_SIZE,
+    MOJO_NORM_NONE,
+    MOJO_NORM_WHISPER,
+    MOJO_NORM_MINMAX,
+    MOJO_NORM_ZSCORE,
 )
 # from audio import mel_spectrogram  # REMOVED - causes crash in shared lib context
 
@@ -325,7 +329,12 @@ fn fft_iterative_with_twiddles(
         return result^
 
 fn rfft_true(signal: List[Float32], twiddles: List[Complex]) raises -> List[Complex]:
-    """TRUE Real FFT - exploits conjugate symmetry for 2x speedup."""
+    """
+    Real FFT using full complex FFT - returns positive frequencies only.
+
+    For real-valued input, the FFT output has conjugate symmetry:
+    X[k] = conj(X[N-k]), so we only need bins 0 to N/2.
+    """
     var N = len(signal)
     var fft_size = next_power_of_2(N)
     var half_size = fft_size // 2
@@ -337,30 +346,18 @@ fn rfft_true(signal: List[Float32], twiddles: List[Complex]) raises -> List[Comp
     for _ in range(N, fft_size):
         padded.append(0.0)
 
-    # Pack: Convert N real → N/2 complex
-    var packed = List[Float32]()
-    for i in range(half_size):
-        packed.append(padded[2 * i])
+    # Compute full FFT (all samples used correctly)
+    var full_fft = fft_iterative_with_twiddles(padded, twiddles)
 
-    # Compute N/2-point FFT
-    var packed_fft = fft_iterative_with_twiddles(packed, twiddles)
-
-    # Unpack: Extract positive frequencies
+    # Extract positive frequencies only (0 to N/2)
     var result = List[Complex]()
 
-    # Bin 0 (DC)
-    result.append(Complex(packed_fft[0].real, 0.0))
-
-    # Bins 1 to N/2-1
-    for k in range(1, half_size):
-        if k < len(packed_fft):
-            result.append(Complex(packed_fft[k].real, packed_fft[k].imag))
-
-    # Bin N/2 (Nyquist)
-    if half_size < len(packed_fft):
-        result.append(Complex(packed_fft[0].imag, 0.0))
-    else:
-        result.append(Complex(0.0, 0.0))
+    # Bins 0 to N/2 (inclusive)
+    for k in range(half_size + 1):
+        if k < len(full_fft):
+            result.append(Complex(full_fft[k].real, full_fft[k].imag))
+        else:
+            result.append(Complex(0.0, 0.0))
 
     return result^
 
@@ -371,8 +368,16 @@ fn rfft_with_twiddles(
     """TRUE RFFT using cached twiddles - 2x faster."""
     return rfft_true(signal, twiddles)
 
-fn power_spectrum(fft_output: List[Complex]) -> List[Float32]:
-    """Compute power spectrum from FFT output (SIMD-optimized)."""
+fn power_spectrum(fft_output: List[Complex], norm_factor: Float32 = 1.0) -> List[Float32]:
+    """
+    Compute power spectrum from FFT output (SIMD-optimized).
+
+    Args:
+        fft_output: Complex FFT output.
+        norm_factor: Normalization divisor for power values.
+                     For Whisper compatibility, use n_fft (e.g., 400).
+                     Default 1.0 gives raw power (real² + imag²).
+    """
     var N = len(fft_output)
     var result = List[Float32]()
 
@@ -382,6 +387,7 @@ fn power_spectrum(fft_output: List[Complex]) -> List[Float32]:
 
     # SIMD processing
     comptime simd_width = 16
+    var norm_vec = SIMD[DType.float32, simd_width](norm_factor)
 
     var i = 0
     while i + simd_width <= N:
@@ -393,8 +399,8 @@ fn power_spectrum(fft_output: List[Complex]) -> List[Float32]:
             real_vec[j] = fft_output[i + j].real
             imag_vec[j] = fft_output[i + j].imag
 
-        # SIMD: real² + imag²
-        var power_vec = real_vec * real_vec + imag_vec * imag_vec
+        # SIMD: (real² + imag²) / norm_factor
+        var power_vec = (real_vec * real_vec + imag_vec * imag_vec) / norm_vec
 
         @parameter
         for j in range(simd_width):
@@ -404,7 +410,7 @@ fn power_spectrum(fft_output: List[Complex]) -> List[Float32]:
 
     # Remainder
     while i < N:
-        result[i] = fft_output[i].power()
+        result[i] = fft_output[i].power() / norm_factor
         i += 1
 
     return result^
@@ -429,10 +435,9 @@ fn stft(
     else:
         raise Error("Unknown window function: " + window_fn)
 
-    # Pre-compute twiddles once
+    # Pre-compute twiddles for full FFT size
     var fft_size = next_power_of_2(n_fft)
-    var half_size = fft_size // 2
-    var cached_twiddles = precompute_twiddle_factors(half_size)
+    var cached_twiddles = precompute_twiddle_factors(fft_size)
 
     # Calculate number of frames
     var num_frames = (len(signal) - n_fft) // hop_length + 1
@@ -465,8 +470,9 @@ fn stft(
             # RFFT with cached twiddles
             var fft_result = rfft_with_twiddles(windowed, cached_twiddles)
 
-            # Power spectrum
-            var full_power = power_spectrum(fft_result)
+            # Power spectrum with Whisper-compatible normalization
+            # Dividing by n_fft aligns power scale with Whisper/librosa conventions
+            var full_power = power_spectrum(fft_result, Float32(n_fft))
 
             # Store in pre-allocated spectrogram
             for i in range(needed_bins):
@@ -661,6 +667,135 @@ fn apply_mel_filterbank(
     return mel_spec^
 
 # ------------------------------------------------------------------------------
+# Normalization Functions (Inlined for FFI)
+# ------------------------------------------------------------------------------
+# WARNING: These MUST be inlined - importing from audio.mojo causes segfault.
+
+fn normalize_whisper_ffi(var mel_spec: List[List[Float32]]) -> List[List[Float32]]:
+    """
+    Apply Whisper-specific normalization: clamp to max-8, then (x+4)/4.
+    Output range: ~[-1, 1].
+    """
+    if len(mel_spec) == 0:
+        return mel_spec^
+
+    # Find global maximum
+    var max_val: Float32 = -1e10
+    for i in range(len(mel_spec)):
+        for j in range(len(mel_spec[i])):
+            if mel_spec[i][j] > max_val:
+                max_val = mel_spec[i][j]
+
+    # Apply normalization
+    var min_val = max_val - 8.0
+    var result = List[List[Float32]]()
+
+    for i in range(len(mel_spec)):
+        var row = List[Float32]()
+        for j in range(len(mel_spec[i])):
+            var val = mel_spec[i][j]
+            if val < min_val:
+                val = min_val
+            val = (val + 4.0) / 4.0
+            row.append(val)
+        result.append(row^)
+
+    return result^
+
+
+fn normalize_minmax_ffi(var mel_spec: List[List[Float32]]) -> List[List[Float32]]:
+    """
+    Apply min-max normalization to [0, 1].
+    """
+    if len(mel_spec) == 0:
+        return mel_spec^
+
+    var min_val: Float32 = 1e10
+    var max_val: Float32 = -1e10
+
+    for i in range(len(mel_spec)):
+        for j in range(len(mel_spec[i])):
+            var val = mel_spec[i][j]
+            if val < min_val:
+                min_val = val
+            if val > max_val:
+                max_val = val
+
+    var range_val = max_val - min_val
+    if range_val == 0.0:
+        range_val = 1.0
+
+    var result = List[List[Float32]]()
+
+    for i in range(len(mel_spec)):
+        var row = List[Float32]()
+        for j in range(len(mel_spec[i])):
+            var val = (mel_spec[i][j] - min_val) / range_val
+            row.append(val)
+        result.append(row^)
+
+    return result^
+
+
+fn normalize_zscore_ffi(var mel_spec: List[List[Float32]]) -> List[List[Float32]]:
+    """
+    Apply z-score normalization: (x - mean) / std.
+    """
+    if len(mel_spec) == 0:
+        return mel_spec^
+
+    var sum: Float32 = 0.0
+    var count: Int = 0
+
+    for i in range(len(mel_spec)):
+        for j in range(len(mel_spec[i])):
+            sum += mel_spec[i][j]
+            count += 1
+
+    if count == 0:
+        return mel_spec^
+
+    var mean = sum / Float32(count)
+
+    var sq_diff_sum: Float32 = 0.0
+    for i in range(len(mel_spec)):
+        for j in range(len(mel_spec[i])):
+            var diff = mel_spec[i][j] - mean
+            sq_diff_sum += diff * diff
+
+    var std = sqrt(sq_diff_sum / Float32(count))
+    if std == 0.0:
+        std = 1.0
+
+    var result = List[List[Float32]]()
+
+    for i in range(len(mel_spec)):
+        var row = List[Float32]()
+        for j in range(len(mel_spec[i])):
+            var val = (mel_spec[i][j] - mean) / std
+            row.append(val)
+        result.append(row^)
+
+    return result^
+
+
+fn apply_normalization_ffi(
+    var mel_spec: List[List[Float32]],
+    normalization: Int32
+) -> List[List[Float32]]:
+    """Apply specified normalization based on config value."""
+    if normalization == MOJO_NORM_WHISPER:
+        return normalize_whisper_ffi(mel_spec^)
+    elif normalization == MOJO_NORM_MINMAX:
+        return normalize_minmax_ffi(mel_spec^)
+    elif normalization == MOJO_NORM_ZSCORE:
+        return normalize_zscore_ffi(mel_spec^)
+    else:
+        # MOJO_NORM_NONE or unknown
+        return mel_spec^
+
+
+# ------------------------------------------------------------------------------
 # Mel Spectrogram (Main Function)
 # ------------------------------------------------------------------------------
 
@@ -669,13 +804,22 @@ fn mel_spectrogram_ffi(
     sample_rate: Int,
     n_fft: Int,
     hop_length: Int,
-    n_mels: Int
+    n_mels: Int,
+    normalization: Int32 = MOJO_NORM_NONE
 ) raises -> List[List[Float32]]:
     """
     Compute mel spectrogram - inlined implementation for FFI context.
 
     This is the complete transformation: audio → mel spectrogram.
     Inlined from audio.mojo to avoid shared library issues.
+
+    Args:
+        audio: Input audio samples.
+        sample_rate: Sample rate in Hz.
+        n_fft: FFT window size.
+        hop_length: Hop length between frames.
+        n_mels: Number of mel bands.
+        normalization: Normalization method constant.
     """
     # Step 1: Compute STFT (power spectrogram)
     var power_spec = stft(audio, n_fft, hop_length, "hann")
@@ -699,6 +843,10 @@ fn mel_spectrogram_ffi(
             # Apply log10 scaling
             var log_value = log(Float64(value)) / log(10.0)
             mel_spec[i][j] = Float32(log_value)
+
+    # Step 5: Apply normalization (if requested)
+    if normalization != MOJO_NORM_NONE:
+        return apply_normalization_ffi(mel_spec^, normalization)
 
     return mel_spec^
 
@@ -773,7 +921,8 @@ fn mojo_mel_spectrogram_compute(
             sample_rate=Int(cfg.sample_rate),
             n_fft=Int(cfg.n_fft),
             hop_length=Int(cfg.hop_length),
-            n_mels=Int(cfg.n_mels)
+            n_mels=Int(cfg.n_mels),
+            normalization=cfg.normalization
         )
 
         # Validate result

@@ -93,8 +93,20 @@ fn apply_window_simd(signal: List[Float32], window: List[Float32]) raises -> Lis
 comptime WHISPER_SAMPLE_RATE = 16000
 comptime WHISPER_N_FFT = 400
 comptime WHISPER_HOP_LENGTH = 160
-comptime WHISPER_N_MELS = 80
+comptime WHISPER_N_MELS = 80        # Whisper large-v2 and earlier
+comptime WHISPER_N_MELS_V3 = 128    # Whisper large-v3
 comptime WHISPER_FRAMES_30S = 3000
+
+# ==============================================================================
+# Normalization Constants
+# ==============================================================================
+# Use these values with the normalization parameter in mel_spectrogram()
+# or with MojoMelConfig.normalization in the FFI API.
+
+comptime NORM_NONE: Int = 0      # Raw log mels, range [-10, 0]
+comptime NORM_WHISPER: Int = 1   # Whisper: clamp to max-8, then (x+4)/4, range ~[-1, 1]
+comptime NORM_MINMAX: Int = 2    # Min-max scaling to [0, 1]
+comptime NORM_ZSCORE: Int = 3    # Z-score: (x - mean) / std, range ~[-3, 3]
 
 
 # ==============================================================================
@@ -394,21 +406,17 @@ fn fft_internal(signal: List[Float32]) raises -> List[Complex]:
 
 fn rfft_true(signal: List[Float32], twiddles: List[Complex]) raises -> List[Complex]:
     """
-    TRUE Real FFT - exploits conjugate symmetry for 2x speedup!
+    Real FFT using full complex FFT - returns positive frequencies only.
 
-    Algorithm:
-    1. Pack N real → N/2 complex (even=real, odd=imag)
-    2. Compute N/2-point complex FFT (HALF the work!)
-    3. Unpack using symmetry → N/2+1 positive frequencies
-
-    This is the PROPER RFFT - truly 2x faster than full FFT!
+    For real-valued input, the FFT output has conjugate symmetry:
+    X[k] = conj(X[N-k]), so we only need bins 0 to N/2.
 
     Args:
-        signal: Real-valued input
-        twiddles: Pre-computed twiddles for packed size
+        signal: Real-valued input.
+        twiddles: Pre-computed twiddles for FFT size.
 
     Returns:
-        Positive frequencies (N/2+1 bins)
+        Positive frequencies (N/2+1 bins).
     """
     var N = len(signal)
     var fft_size = next_power_of_2(N)
@@ -421,31 +429,19 @@ fn rfft_true(signal: List[Float32], twiddles: List[Complex]) raises -> List[Comp
     for _ in range(N, fft_size):
         padded.append(0.0)
 
-    # PACK: Convert N real → N/2 complex
-    # [x0, x1, x2, x3, ...] → [x0+i*x1, x2+i*x3, ...]
-    var packed = List[Float32]()
-    for i in range(half_size):
-        packed.append(padded[2 * i])  # Even indices only!
+    # Compute full FFT (all samples used correctly)
+    var full_fft = fft_iterative_with_twiddles(padded, twiddles)
 
-    # Compute N/2-point FFT (HALF the size = 2x faster!)
-    var packed_fft = fft_iterative_with_twiddles(packed, twiddles)
-
-    # UNPACK: Extract positive frequencies
+    # Extract positive frequencies only (0 to N/2)
+    # For real input, X[k] = conj(X[N-k]), so we only need first half + DC + Nyquist
     var result = List[Complex]()
 
-    # Bin 0 (DC)
-    result.append(Complex(packed_fft[0].real, 0.0))
-
-    # Bins 1 to N/2-1 (use packed FFT directly for real signals)
-    for k in range(1, half_size):
-        if k < len(packed_fft):
-            result.append(Complex(packed_fft[k].real, packed_fft[k].imag))
-
-    # Bin N/2 (Nyquist)
-    if half_size < len(packed_fft):
-        result.append(Complex(packed_fft[0].imag, 0.0))
-    else:
-        result.append(Complex(0.0, 0.0))
+    # Bins 0 to N/2 (inclusive)
+    for k in range(half_size + 1):
+        if k < len(full_fft):
+            result.append(Complex(full_fft[k].real, full_fft[k].imag))
+        else:
+            result.append(Complex(0.0, 0.0))
 
     return result^
 
@@ -457,14 +453,13 @@ fn rfft(signal: List[Float32]) raises -> List[Complex]:
     For repeated calls (like STFT), use rfft_true with cached twiddles!
 
     Args:
-        signal: Real-valued input
+        signal: Real-valued input.
 
     Returns:
-        Complex spectrum (first N/2+1 bins only)
+        Complex spectrum (first N/2+1 bins only).
     """
     var fft_size = next_power_of_2(len(signal))
-    var half_size = fft_size // 2
-    var twiddles = precompute_twiddle_factors(half_size)  # N/2 twiddles!
+    var twiddles = precompute_twiddle_factors(fft_size)  # Full size twiddles
     return rfft_true(signal, twiddles)
 
 
@@ -505,22 +500,26 @@ fn fft(signal: List[Float32]) raises -> List[Complex]:
     return fft_internal(padded)
 
 
-fn power_spectrum(fft_output: List[Complex]) -> List[Float32]:
+fn power_spectrum(fft_output: List[Complex], norm_factor: Float32 = 1.0) -> List[Float32]:
     """
     Compute power spectrum from FFT output (SIMD-optimized).
 
-    Power = real² + imag² for each frequency bin.
+    Power = (real² + imag²) / norm_factor for each frequency bin.
 
     Args:
-        fft_output: Complex FFT coefficients
+        fft_output: Complex FFT coefficients.
+        norm_factor: Normalization divisor for power values.
+                     For Whisper compatibility, use n_fft (e.g., 400).
+                     Default 1.0 gives raw power.
 
     Returns:
-        Power values (real-valued)
+        Power values (real-valued).
 
     Example:
         ```mojo
         var spectrum = fft(signal)
-        var power = power_spectrum(spectrum)
+        var power = power_spectrum(spectrum)  # Raw power
+        var power_norm = power_spectrum(spectrum, 400.0)  # Whisper-compatible
         ```
     """
     var N = len(fft_output)
@@ -532,6 +531,7 @@ fn power_spectrum(fft_output: List[Complex]) -> List[Float32]:
 
     # SIMD processing with Float32 (16 elements!)
     comptime simd_width = 16
+    var norm_vec = SIMD[DType.float32, simd_width](norm_factor)
 
     var i = 0
     while i + simd_width <= N:
@@ -544,8 +544,8 @@ fn power_spectrum(fft_output: List[Complex]) -> List[Float32]:
             real_vec[j] = fft_output[i + j].real
             imag_vec[j] = fft_output[i + j].imag
 
-        # SIMD: real² + imag² (16 at once!)
-        var power_vec = real_vec * real_vec + imag_vec * imag_vec
+        # SIMD: (real² + imag²) / norm_factor
+        var power_vec = (real_vec * real_vec + imag_vec * imag_vec) / norm_vec
 
         # Store
         @parameter
@@ -556,7 +556,7 @@ fn power_spectrum(fft_output: List[Complex]) -> List[Float32]:
 
     # Remainder
     while i < N:
-        result[i] = fft_output[i].power()
+        result[i] = fft_output[i].power() / norm_factor
         i += 1
 
     return result^
@@ -617,10 +617,9 @@ fn stft(
         raise Error("Unknown window function: " + window_fn)
 
     # PRE-COMPUTE twiddles ONCE for all frames!
-    # For TRUE RFFT, we need N/2-point FFT twiddles (2x faster!)
+    # Pre-compute twiddles for full FFT size
     var fft_size = next_power_of_2(n_fft)
-    var half_size = fft_size // 2
-    var cached_twiddles = precompute_twiddle_factors(half_size)  # HALF size for true RFFT!
+    var cached_twiddles = precompute_twiddle_factors(fft_size)
 
     # Calculate number of frames
     var num_frames = (len(signal) - n_fft) // hop_length + 1
@@ -655,8 +654,9 @@ fn stft(
             # RFFT with CACHED twiddles (no recomputation!)
             var fft_result = rfft_with_twiddles(windowed, cached_twiddles)
 
-            # Power spectrum
-            var full_power = power_spectrum(fft_result)
+            # Power spectrum with Whisper-compatible normalization
+            # Dividing by n_fft aligns power scale with Whisper/librosa conventions
+            var full_power = power_spectrum(fft_result, Float32(n_fft))
 
             # Store in pre-allocated spectrogram (thread-safe write)
             for i in range(needed_bins):
@@ -1248,3 +1248,200 @@ fn validate_whisper_audio(audio: List[Float32], duration_seconds: Int) -> Bool:
     """
     var expected_samples = duration_seconds * WHISPER_SAMPLE_RATE
     return len(audio) == expected_samples
+
+
+# ==============================================================================
+# Normalization Functions
+# ==============================================================================
+
+
+fn normalize_whisper(mel_spec: List[List[Float32]]) -> List[List[Float32]]:
+    """
+    Apply Whisper-specific normalization to log mel spectrogram.
+
+    OpenAI Whisper normalization (audio.py):
+      1. Clamp to max - 8.0 (80dB dynamic range)
+      2. Scale with (x + 4.0) / 4.0 (normalize to ~[-1, 1])
+
+    Args:
+        mel_spec: Log mel spectrogram (output of mel_spectrogram with NORM_NONE)
+
+    Returns:
+        Normalized mel spectrogram with values in ~[-1, 1]
+
+    Example:
+        ```mojo
+        var raw_mel = mel_spectrogram(audio)  # Raw log mels
+        var whisper_mel = normalize_whisper(raw_mel)  # Whisper-ready
+        ```
+    """
+    if len(mel_spec) == 0:
+        return mel_spec
+
+    # Find global maximum
+    var max_val: Float32 = -1e10
+    for i in range(len(mel_spec)):
+        for j in range(len(mel_spec[i])):
+            if mel_spec[i][j] > max_val:
+                max_val = mel_spec[i][j]
+
+    # Apply normalization: clamp to max-8, then (x+4)/4
+    var min_val = max_val - 8.0
+    var result = List[List[Float32]]()
+
+    for i in range(len(mel_spec)):
+        var row = List[Float32]()
+        for j in range(len(mel_spec[i])):
+            var val = mel_spec[i][j]
+            # Clamp to 80dB dynamic range
+            if val < min_val:
+                val = min_val
+            # Scale to ~[-1, 1]
+            val = (val + 4.0) / 4.0
+            row.append(val)
+        result.append(row^)
+
+    return result^
+
+
+fn normalize_minmax(mel_spec: List[List[Float32]]) -> List[List[Float32]]:
+    """
+    Apply min-max normalization to scale values to [0, 1].
+
+    Formula: (x - min) / (max - min)
+
+    Args:
+        mel_spec: Log mel spectrogram
+
+    Returns:
+        Normalized mel spectrogram with values in [0, 1]
+
+    Example:
+        ```mojo
+        var raw_mel = mel_spectrogram(audio)
+        var normalized = normalize_minmax(raw_mel)
+        ```
+    """
+    if len(mel_spec) == 0:
+        return mel_spec
+
+    # Find global min and max
+    var min_val: Float32 = 1e10
+    var max_val: Float32 = -1e10
+
+    for i in range(len(mel_spec)):
+        for j in range(len(mel_spec[i])):
+            var val = mel_spec[i][j]
+            if val < min_val:
+                min_val = val
+            if val > max_val:
+                max_val = val
+
+    # Avoid division by zero
+    var range_val = max_val - min_val
+    if range_val == 0.0:
+        range_val = 1.0
+
+    # Apply normalization
+    var result = List[List[Float32]]()
+
+    for i in range(len(mel_spec)):
+        var row = List[Float32]()
+        for j in range(len(mel_spec[i])):
+            var val = (mel_spec[i][j] - min_val) / range_val
+            row.append(val)
+        result.append(row^)
+
+    return result^
+
+
+fn normalize_zscore(mel_spec: List[List[Float32]]) -> List[List[Float32]]:
+    """
+    Apply z-score (standard) normalization.
+
+    Formula: (x - mean) / std
+
+    Args:
+        mel_spec: Log mel spectrogram
+
+    Returns:
+        Normalized mel spectrogram with mean ~0 and std ~1
+
+    Example:
+        ```mojo
+        var raw_mel = mel_spectrogram(audio)
+        var normalized = normalize_zscore(raw_mel)
+        ```
+    """
+    if len(mel_spec) == 0:
+        return mel_spec
+
+    # Calculate mean
+    var sum: Float32 = 0.0
+    var count: Int = 0
+
+    for i in range(len(mel_spec)):
+        for j in range(len(mel_spec[i])):
+            sum += mel_spec[i][j]
+            count += 1
+
+    if count == 0:
+        return mel_spec
+
+    var mean = sum / Float32(count)
+
+    # Calculate standard deviation
+    var sq_diff_sum: Float32 = 0.0
+    for i in range(len(mel_spec)):
+        for j in range(len(mel_spec[i])):
+            var diff = mel_spec[i][j] - mean
+            sq_diff_sum += diff * diff
+
+    var std = sqrt(sq_diff_sum / Float32(count))
+
+    # Avoid division by zero
+    if std == 0.0:
+        std = 1.0
+
+    # Apply normalization
+    var result = List[List[Float32]]()
+
+    for i in range(len(mel_spec)):
+        var row = List[Float32]()
+        for j in range(len(mel_spec[i])):
+            var val = (mel_spec[i][j] - mean) / std
+            row.append(val)
+        result.append(row^)
+
+    return result^
+
+
+fn apply_normalization(
+    mel_spec: List[List[Float32]],
+    normalization: Int
+) -> List[List[Float32]]:
+    """
+    Apply specified normalization to mel spectrogram.
+
+    Args:
+        mel_spec: Log mel spectrogram
+        normalization: One of NORM_NONE, NORM_WHISPER, NORM_MINMAX, NORM_ZSCORE
+
+    Returns:
+        Normalized mel spectrogram (or unchanged if NORM_NONE)
+
+    Example:
+        ```mojo
+        var mel = mel_spectrogram(audio)
+        var normalized = apply_normalization(mel, NORM_WHISPER)
+        ```
+    """
+    if normalization == NORM_WHISPER:
+        return normalize_whisper(mel_spec)
+    elif normalization == NORM_MINMAX:
+        return normalize_minmax(mel_spec)
+    elif normalization == NORM_ZSCORE:
+        return normalize_zscore(mel_spec)
+    else:
+        # NORM_NONE or unknown - return as-is
+        return mel_spec

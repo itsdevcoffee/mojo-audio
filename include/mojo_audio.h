@@ -40,14 +40,52 @@ typedef enum {
 const char* mojo_audio_last_error(void);
 
 /* ============================================================================
+ * Normalization Options
+ * ========================================================================== */
+
+/**
+ * Normalization methods for mel spectrogram output.
+ *
+ * MOJO_NORM_NONE:    Raw log mels, range [-10, 0]. Default, backwards compatible.
+ * MOJO_NORM_WHISPER: OpenAI Whisper normalization. Clamps to max-8 (80dB dynamic
+ *                    range), then scales with (x+4)/4. Output range: ~[-1, 1].
+ *                    Use this for Whisper model input.
+ * MOJO_NORM_MINMAX:  Min-max scaling to [0, 1]. (x - min) / (max - min).
+ * MOJO_NORM_ZSCORE:  Z-score normalization. (x - mean) / std. Range: ~[-3, 3].
+ */
+typedef enum {
+    MOJO_NORM_NONE = 0,
+    MOJO_NORM_WHISPER = 1,
+    MOJO_NORM_MINMAX = 2,
+    MOJO_NORM_ZSCORE = 3,
+} MojoNormalization;
+
+/* ============================================================================
  * Configuration
  * ========================================================================== */
 
+/**
+ * Configuration for mel spectrogram computation.
+ *
+ * Fields:
+ *   sample_rate:   Audio sample rate in Hz (default: 16000)
+ *   n_fft:         FFT window size (default: 400)
+ *   hop_length:    Hop length between frames (default: 160)
+ *   n_mels:        Number of mel bands (default: 80 for Whisper v2, 128 for v3)
+ *   normalization: Output normalization method (default: MOJO_NORM_NONE)
+ *
+ * Example:
+ *   MojoMelConfig config;
+ *   mojo_mel_config_default(&config);
+ *   config.n_mels = 128;                    // For Whisper large-v3
+ *   config.normalization = MOJO_NORM_WHISPER; // Whisper-ready output
+ */
 typedef struct {
-    int32_t sample_rate;  /* Default: 16000 Hz */
-    int32_t n_fft;        /* Default: 400 */
-    int32_t hop_length;   /* Default: 160 */
-    int32_t n_mels;       /* Default: 80 */
+    int32_t sample_rate;    /* Default: 16000 Hz */
+    int32_t n_fft;          /* Default: 400 */
+    int32_t hop_length;     /* Default: 160 */
+    int32_t n_mels;         /* Default: 80 (use 128 for Whisper large-v3) */
+    int32_t normalization;  /* Default: MOJO_NORM_NONE (0) */
 } MojoMelConfig;
 
 void mojo_mel_config_default(MojoMelConfig* out_config);

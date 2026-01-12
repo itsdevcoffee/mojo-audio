@@ -193,6 +193,61 @@ stft(signal, n_fft, hop_length, window_fn) -> List[List[Float32]]
 hz_to_mel(freq_hz: Float32) -> Float32
 mel_to_hz(freq_mel: Float32) -> Float32
 create_mel_filterbank(n_mels, n_fft, sample_rate) -> List[List[Float32]]
+
+// Normalization
+normalize_whisper(mel_spec) -> List[List[Float32]]  // Whisper-ready output
+normalize_minmax(mel_spec) -> List[List[Float32]]   // Scale to [0, 1]
+normalize_zscore(mel_spec) -> List[List[Float32]]   // Mean=0, std=1
+apply_normalization(mel_spec, norm_type) -> List[List[Float32]]
+```
+
+---
+
+## 🔧 **Normalization**
+
+Different ML models expect different input ranges. mojo-audio supports multiple normalization methods:
+
+| Constant | Value | Formula | Output Range | Use Case |
+|----------|-------|---------|--------------|----------|
+| `NORM_NONE` | 0 | `log10(max(x, 1e-10))` | [-10, 0] | Raw output, custom processing |
+| `NORM_WHISPER` | 1 | `max-8` clamp, then `(x+4)/4` | ~[-1, 1] | **OpenAI Whisper models** |
+| `NORM_MINMAX` | 2 | `(x - min) / (max - min)` | [0, 1] | General ML |
+| `NORM_ZSCORE` | 3 | `(x - mean) / std` | ~[-3, 3] | Wav2Vec2, research |
+
+### Pure Mojo Usage
+
+```mojo
+from audio import mel_spectrogram, normalize_whisper, NORM_WHISPER
+
+// Option 1: Separate normalization
+var raw_mel = mel_spectrogram(audio)
+var whisper_mel = normalize_whisper(raw_mel)
+
+// Option 2: Using apply_normalization
+var normalized = apply_normalization(raw_mel, NORM_WHISPER)
+```
+
+### FFI Usage (C/Rust/Python)
+
+Set `normalization` in config to apply normalization in the pipeline:
+
+```c
+MojoMelConfig config;
+mojo_mel_config_default(&config);
+config.normalization = MOJO_NORM_WHISPER;  // Whisper-ready output
+
+// Compute returns normalized mel spectrogram
+MojoMelHandle handle = mojo_mel_spectrogram_compute(audio, num_samples, &config);
+```
+
+```rust
+let config = MojoMelConfig {
+    sample_rate: 16000,
+    n_fft: 400,
+    hop_length: 160,
+    n_mels: 128,  // Whisper large-v3
+    normalization: 1,  // MOJO_NORM_WHISPER
+};
 ```
 
 ---
@@ -203,8 +258,23 @@ create_mel_filterbank(n_mels, n_fft, sample_rate) -> List[List[Float32]]
 - ✅ Sample rate: 16kHz
 - ✅ FFT size: 400
 - ✅ Hop length: 160 (10ms frames)
-- ✅ Mel bands: 80
-- ✅ Output shape: (80, ~3000) for 30s
+- ✅ Mel bands: 80 (v2) or 128 (v3)
+- ✅ Output shape: (n_mels, ~3000) for 30s
+
+### Mel Bins by Model Version
+
+| Whisper Model | n_mels | Constant |
+|---------------|--------|----------|
+| tiny, base, small, medium, large, large-v2 | 80 | `WHISPER_N_MELS` |
+| large-v3 | 128 | `WHISPER_N_MELS_V3` |
+
+```mojo
+// For large-v2 and earlier (default)
+var mel = mel_spectrogram(audio)  // n_mels=80
+
+// For large-v3
+var mel = mel_spectrogram(audio, n_mels=128)
+```
 
 **Validated against Whisper model expectations!**
 
