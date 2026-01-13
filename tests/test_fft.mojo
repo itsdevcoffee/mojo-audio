@@ -3,7 +3,12 @@
 from math import sin, sqrt
 from math.constants import pi
 
-from audio import Complex, fft, power_spectrum, stft, rfft, rfft_true, precompute_twiddle_factors, next_power_of_2
+from audio import (
+    Complex, fft, power_spectrum, stft, rfft, rfft_true,
+    precompute_twiddle_factors, next_power_of_2,
+    ComplexArray, TwiddleFactorsSoA, fft_simd, rfft_simd, power_spectrum_simd,
+    Radix4TwiddleCache, fft_radix4_cached, fft_radix4_cached_simd
+)
 
 
 fn abs(x: Float32) -> Float32:
@@ -347,7 +352,7 @@ fn test_rfft_vs_full_fft() raises:
         var rfft_mag = sqrt(rfft_sine[k].real * rfft_sine[k].real + rfft_sine[k].imag * rfft_sine[k].imag)
         var ref_mag = sqrt(ref_sine[k].real * ref_sine[k].real + ref_sine[k].imag * ref_sine[k].imag)
 
-        var error: Float32 = 0.0
+        var error: Float32
         if ref_mag > 1e-10:
             error = abs(rfft_mag - ref_mag) / ref_mag
         elif rfft_mag > 1e-10:
@@ -422,6 +427,323 @@ fn assert_true(condition: Bool, message: String) raises:
 
 
 # ==============================================================================
+# SIMD FFT Tests (Stage 2 Optimization)
+# ==============================================================================
+
+fn test_simd_fft_vs_original() raises:
+    """Test SIMD FFT produces same results as original FFT."""
+    print("Testing SIMD FFT vs original FFT...")
+
+    var test_sizes = List[Int]()
+    test_sizes.append(8)
+    test_sizes.append(16)
+    test_sizes.append(64)
+    test_sizes.append(256)
+    test_sizes.append(512)
+
+    for size_idx in range(len(test_sizes)):
+        var N = test_sizes[size_idx]
+
+        # Create test signal
+        var signal = List[Float32]()
+        for i in range(N):
+            signal.append(Float32(sin(2.0 * pi * Float64(i) / Float64(N))))
+
+        # Original FFT
+        var original_result = fft(signal)
+
+        # SIMD FFT
+        var twiddles = TwiddleFactorsSoA(N)
+        var simd_result = fft_simd(signal, twiddles)
+
+        # Compare results
+        var max_diff: Float32 = 0.0
+        for i in range(N):
+            var orig_r = original_result[i].real
+            var orig_i = original_result[i].imag
+            var simd_r = simd_result.real[i]
+            var simd_i = simd_result.imag[i]
+
+            var diff_r = abs(orig_r - simd_r)
+            var diff_i = abs(orig_i - simd_i)
+
+            if diff_r > max_diff:
+                max_diff = diff_r
+            if diff_i > max_diff:
+                max_diff = diff_i
+
+        if max_diff > 1e-4:
+            raise Error("SIMD FFT differs from original for N=" + String(N) +
+                       " (max diff: " + String(max_diff) + ")")
+
+    print("  ✓ SIMD FFT matches original FFT for all sizes")
+
+
+fn test_simd_rfft_vs_original() raises:
+    """Test SIMD RFFT produces same results as original RFFT."""
+    print("Testing SIMD RFFT vs original RFFT...")
+
+    var test_sizes = List[Int]()
+    test_sizes.append(8)
+    test_sizes.append(16)
+    test_sizes.append(64)
+    test_sizes.append(256)
+    test_sizes.append(400)
+    test_sizes.append(512)
+
+    for size_idx in range(len(test_sizes)):
+        var N = test_sizes[size_idx]
+        var fft_size = next_power_of_2(N)
+        var expected_bins = fft_size // 2 + 1
+
+        # Create test signal
+        var signal = List[Float32]()
+        for i in range(N):
+            signal.append(Float32(sin(2.0 * pi * 5.0 * Float64(i) / Float64(N))))
+
+        # Original RFFT
+        var original_result = rfft(signal)
+
+        # SIMD RFFT
+        var twiddles = TwiddleFactorsSoA(fft_size)
+        var simd_result = rfft_simd(signal, twiddles)
+
+        # Verify length
+        if simd_result.size != expected_bins:
+            raise Error("SIMD RFFT output length incorrect for N=" + String(N))
+
+        # Compare results
+        var max_diff: Float32 = 0.0
+        for i in range(expected_bins):
+            var orig_r = original_result[i].real
+            var orig_i = original_result[i].imag
+            var simd_r = simd_result.real[i]
+            var simd_i = simd_result.imag[i]
+
+            var diff_r = abs(orig_r - simd_r)
+            var diff_i = abs(orig_i - simd_i)
+
+            if diff_r > max_diff:
+                max_diff = diff_r
+            if diff_i > max_diff:
+                max_diff = diff_i
+
+        if max_diff > 1e-4:
+            raise Error("SIMD RFFT differs from original for N=" + String(N) +
+                       " (max diff: " + String(max_diff) + ")")
+
+    print("  ✓ SIMD RFFT matches original RFFT for all sizes")
+
+
+fn test_simd_power_spectrum() raises:
+    """Test SIMD power spectrum matches original."""
+    print("Testing SIMD power spectrum...")
+
+    var N = 256
+    var signal = List[Float32]()
+    for i in range(N):
+        signal.append(Float32(sin(2.0 * pi * Float64(i) / Float64(N))))
+
+    # Original path
+    var orig_fft = fft(signal)
+    var orig_power = power_spectrum(orig_fft, Float32(N))
+
+    # SIMD path
+    var twiddles = TwiddleFactorsSoA(N)
+    var simd_fft = fft_simd(signal, twiddles)
+    var simd_power = power_spectrum_simd(simd_fft, Float32(N))
+
+    # Compare
+    var max_diff: Float32 = 0.0
+    for i in range(N):
+        var diff = abs(orig_power[i] - simd_power[i])
+        if diff > max_diff:
+            max_diff = diff
+
+    if max_diff > 1e-4:
+        raise Error("SIMD power spectrum differs (max diff: " + String(max_diff) + ")")
+
+    print("  ✓ SIMD power spectrum matches original")
+
+
+fn test_complex_array_conversion() raises:
+    """Test ComplexArray <-> List[Complex] conversion."""
+    print("Testing ComplexArray conversion...")
+
+    var original = List[Complex]()
+    original.append(Complex(1.0, 2.0))
+    original.append(Complex(3.0, 4.0))
+    original.append(Complex(5.0, 6.0))
+    original.append(Complex(7.0, 8.0))
+
+    # Convert to ComplexArray
+    var soa = ComplexArray.from_complex_list(original)
+
+    # Verify
+    for i in range(4):
+        if abs(soa.real[i] - original[i].real) > 1e-10:
+            raise Error("Real part mismatch at index " + String(i))
+        if abs(soa.imag[i] - original[i].imag) > 1e-10:
+            raise Error("Imag part mismatch at index " + String(i))
+
+    # Convert back
+    var back = soa.to_complex_list()
+
+    for i in range(4):
+        if abs(back[i].real - original[i].real) > 1e-10:
+            raise Error("Round-trip real mismatch at index " + String(i))
+        if abs(back[i].imag - original[i].imag) > 1e-10:
+            raise Error("Round-trip imag mismatch at index " + String(i))
+
+    print("  ✓ ComplexArray conversion validated")
+
+
+# ==============================================================================
+# Zero-Allocation Radix-4 Tests
+# ==============================================================================
+
+fn test_radix4_cached_correctness() raises:
+    """Test radix-4 cached FFT produces correct results."""
+    print("Testing radix-4 cached FFT correctness...")
+
+    # Test with N=256 (power of 4: 4^4 = 256)
+    var N = 256
+    var cache = Radix4TwiddleCache(N)
+
+    # Create sine wave at bin 7
+    var signal = List[Float32]()
+    for i in range(N):
+        signal.append(Float32(sin(2.0 * pi * 7.0 * Float32(i) / Float32(N))))
+
+    # Compute FFT with radix-4 cached
+    var result = fft_radix4_cached(signal, cache)
+
+    # Check bin 7 magnitude (should be N/2 = 128)
+    var mag = sqrt(result.real[7] * result.real[7] + result.imag[7] * result.imag[7])
+    var expected = Float32(N) / 2.0
+
+    if abs(mag - expected) > 1.0:
+        print("  ERROR: Bin 7 magnitude = " + String(mag) + ", expected ~" + String(expected))
+        raise Error("Radix-4 cached FFT incorrect")
+
+    print("  ✓ Radix-4 cached FFT correctness validated (bin 7 mag = " + String(mag)[:6] + ")")
+
+
+fn test_radix4_cached_vs_original() raises:
+    """Test radix-4 cached FFT matches original FFT."""
+    print("Testing radix-4 cached vs original FFT...")
+
+    var sizes = List[Int]()
+    sizes.append(16)   # 4^2
+    sizes.append(64)   # 4^3
+    sizes.append(256)  # 4^4
+    sizes.append(1024) # 4^5
+
+    for idx in range(len(sizes)):
+        var N = sizes[idx]
+        var cache = Radix4TwiddleCache(N)
+
+        # Create test signal
+        var signal = List[Float32]()
+        for i in range(N):
+            signal.append(Float32(i % 10) / 10.0)
+
+        # Compute with both methods
+        var result_orig = fft(signal)
+        var result_cached = fft_radix4_cached(signal, cache)
+
+        # Compare results
+        var max_diff: Float32 = 0.0
+        for i in range(N):
+            var diff_r = abs(result_orig[i].real - result_cached.real[i])
+            var diff_i = abs(result_orig[i].imag - result_cached.imag[i])
+            if diff_r > max_diff:
+                max_diff = diff_r
+            if diff_i > max_diff:
+                max_diff = diff_i
+
+        if max_diff > 1e-4:
+            print("  ERROR: N=" + String(N) + " max diff = " + String(max_diff))
+            raise Error("Radix-4 cached doesn't match original")
+
+    print("  ✓ Radix-4 cached matches original for all sizes")
+
+
+fn test_radix4_cached_simd_vs_scalar() raises:
+    """Test radix-4 SIMD matches scalar version."""
+    print("Testing radix-4 SIMD vs scalar...")
+
+    var sizes = List[Int]()
+    sizes.append(256)
+    sizes.append(1024)
+    sizes.append(4096)
+
+    for idx in range(len(sizes)):
+        var N = sizes[idx]
+        var cache = Radix4TwiddleCache(N)
+
+        # Create test signal
+        var signal = List[Float32]()
+        for i in range(N):
+            signal.append(Float32(sin(2.0 * pi * 3.0 * Float32(i) / Float32(N))))
+
+        # Compute with both methods
+        var result_scalar = fft_radix4_cached(signal, cache)
+        var result_simd = fft_radix4_cached_simd(signal, cache)
+
+        # Compare results
+        var max_diff: Float32 = 0.0
+        for i in range(N):
+            var diff_r = abs(result_scalar.real[i] - result_simd.real[i])
+            var diff_i = abs(result_scalar.imag[i] - result_simd.imag[i])
+            if diff_r > max_diff:
+                max_diff = diff_r
+            if diff_i > max_diff:
+                max_diff = diff_i
+
+        if max_diff > 1e-4:
+            print("  ERROR: N=" + String(N) + " max diff = " + String(max_diff))
+            raise Error("Radix-4 SIMD doesn't match scalar")
+
+    print("  ✓ Radix-4 SIMD matches scalar for all sizes")
+
+
+fn test_radix4_zero_allocation() raises:
+    """Verify second FFT call has no allocation overhead."""
+    print("Testing radix-4 zero-allocation behavior...")
+
+    var N = 1024
+    var cache = Radix4TwiddleCache(N)
+
+    # Create test signal
+    var signal = List[Float32]()
+    for i in range(N):
+        signal.append(Float32(i % 100) / 100.0)
+
+    # Run multiple times - only first should allocate cache
+    # (We can't directly measure allocations, but we can verify
+    # that the cache is reused and results are consistent)
+    var result1 = fft_radix4_cached_simd(signal, cache)
+    var result2 = fft_radix4_cached_simd(signal, cache)
+    var result3 = fft_radix4_cached_simd(signal, cache)
+
+    # Results should be identical
+    var max_diff: Float32 = 0.0
+    for i in range(N):
+        var diff1 = abs(result1.real[i] - result2.real[i])
+        var diff2 = abs(result2.real[i] - result3.real[i])
+        if diff1 > max_diff:
+            max_diff = diff1
+        if diff2 > max_diff:
+            max_diff = diff2
+
+    if max_diff > 1e-10:
+        raise Error("Results differ between runs")
+
+    print("  ✓ Cache reuse verified (results identical across runs)")
+
+
+# ==============================================================================
 # Test Runner
 # ==============================================================================
 
@@ -445,6 +767,20 @@ fn main() raises:
     test_rfft_sinusoid()
     test_rfft_output_length()
     test_rfft_vs_full_fft()
+
+    # SIMD FFT tests (Stage 2)
+    print("\n--- SIMD FFT Tests (Stage 2) ---\n")
+    test_complex_array_conversion()
+    test_simd_fft_vs_original()
+    test_simd_rfft_vs_original()
+    test_simd_power_spectrum()
+
+    # Zero-allocation radix-4 tests
+    print("\n--- Zero-Allocation Radix-4 Tests ---\n")
+    test_radix4_cached_correctness()
+    test_radix4_cached_vs_original()
+    test_radix4_cached_simd_vs_scalar()
+    test_radix4_zero_allocation()
 
     print("\n" + "="*60)
     print("✓ All FFT tests passed!")
