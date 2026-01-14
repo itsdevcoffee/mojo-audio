@@ -7,7 +7,9 @@ from audio import (
     Complex, fft, power_spectrum, stft, rfft, rfft_true,
     precompute_twiddle_factors, next_power_of_2,
     ComplexArray, TwiddleFactorsSoA, fft_simd, rfft_simd, power_spectrum_simd,
-    Radix4TwiddleCache, fft_radix4_cached, fft_radix4_cached_simd
+    Radix4TwiddleCache, fft_radix4_cached, fft_radix4_cached_simd,
+    FourStepCache, fft_four_step,
+    SplitRadixCache, fft_split_radix, fft_split_radix_simd
 )
 
 
@@ -744,6 +746,176 @@ fn test_radix4_zero_allocation() raises:
 
 
 # ==============================================================================
+# Four-Step Cache-Blocked FFT Tests (Stage 3)
+# ==============================================================================
+
+fn test_four_step_vs_original() raises:
+    """Test four-step FFT matches original FFT."""
+    print("Testing four-step FFT vs original...")
+
+    # Test on a perfect square size
+    var N = 256  # 16 x 16
+    var cache = FourStepCache(N)
+
+    # Create test signal (sine wave at frequency 7)
+    var signal = List[Float32]()
+    for i in range(N):
+        var angle = 2.0 * pi * Float32(7 * i) / Float32(N)
+        signal.append(Float32(sin(angle)))
+
+    # Compute both FFTs
+    var four_step_result = fft_four_step(signal, cache)
+    var original_result = fft(signal)
+
+
+    # Compare results
+    var max_error: Float32 = 0.0
+    var max_error_idx = 0
+    for i in range(N):
+        var diff_r = abs(four_step_result.real[i] - original_result[i].real)
+        var diff_i = abs(four_step_result.imag[i] - original_result[i].imag)
+        if diff_r > max_error:
+            max_error = diff_r
+            max_error_idx = i
+        if diff_i > max_error:
+            max_error = diff_i
+            max_error_idx = i
+
+    if max_error > 1e-3:
+        print("  Max error: " + String(max_error) + " at index " + String(max_error_idx))
+        raise Error("Four-step FFT differs from original by " + String(max_error))
+
+    print("  ✓ Four-step FFT matches original (max error: " + String(max_error)[:10] + ")")
+
+
+fn test_four_step_large_n() raises:
+    """Test four-step FFT on larger sizes."""
+    print("Testing four-step FFT on large N...")
+
+    # Test on 4096 = 64 x 64
+    var N = 4096
+    var cache = FourStepCache(N)
+
+    # Create test signal
+    var signal = List[Float32]()
+    for i in range(N):
+        signal.append(Float32(i % 100) / 100.0)
+
+    # Compute both FFTs
+    var four_step_result = fft_four_step(signal, cache)
+    var original_result = fft(signal)
+
+    # Compare results
+    var max_error: Float32 = 0.0
+    for i in range(N):
+        var diff_r = abs(four_step_result.real[i] - original_result[i].real)
+        var diff_i = abs(four_step_result.imag[i] - original_result[i].imag)
+        if diff_r > max_error:
+            max_error = diff_r
+        if diff_i > max_error:
+            max_error = diff_i
+
+    if max_error > 1e-2:
+        print("  Max error: " + String(max_error))
+        raise Error("Four-step FFT differs from original on large N")
+
+    print("  ✓ Four-step FFT correct on N=" + String(N) + " (max error: " + String(max_error)[:10] + ")")
+
+
+# ==============================================================================
+# Split-Radix FFT Tests
+# ==============================================================================
+
+fn test_split_radix_vs_original() raises:
+    """Test split-radix FFT matches original FFT."""
+    print("Testing split-radix FFT vs original...")
+
+    var sizes = List[Int]()
+    sizes.append(8)
+    sizes.append(16)
+    sizes.append(32)
+    sizes.append(64)
+    sizes.append(128)
+    sizes.append(256)
+    sizes.append(512)
+    sizes.append(1024)
+
+    for idx in range(len(sizes)):
+        var N = sizes[idx]
+        var cache = SplitRadixCache(N)
+
+        # Create test signal (sine wave)
+        var signal = List[Float32]()
+        for i in range(N):
+            signal.append(Float32(sin(2.0 * pi * 7.0 * Float32(i) / Float32(N))))
+
+        # Compute with both methods
+        var result_orig = fft(signal)
+        var result_split = fft_split_radix(signal, cache)
+
+        # Compare results
+        var max_diff: Float32 = 0.0
+        var max_diff_idx = 0
+        for i in range(N):
+            var diff_r = abs(result_orig[i].real - result_split.real[i])
+            var diff_i = abs(result_orig[i].imag - result_split.imag[i])
+            if diff_r > max_diff:
+                max_diff = diff_r
+                max_diff_idx = i
+            if diff_i > max_diff:
+                max_diff = diff_i
+                max_diff_idx = i
+
+        if max_diff > 1e-4:
+            print("  ERROR: N=" + String(N) + " max diff = " + String(max_diff) + " at index " + String(max_diff_idx))
+            # Print some debug info
+            print("    orig[" + String(max_diff_idx) + "] = (" + String(result_orig[max_diff_idx].real) + ", " + String(result_orig[max_diff_idx].imag) + ")")
+            print("    split[" + String(max_diff_idx) + "] = (" + String(result_split.real[max_diff_idx]) + ", " + String(result_split.imag[max_diff_idx]) + ")")
+            raise Error("Split-radix doesn't match original for N=" + String(N))
+
+    print("  ✓ Split-radix matches original for all sizes")
+
+
+fn test_split_radix_simd_vs_scalar() raises:
+    """Test split-radix SIMD matches scalar version."""
+    print("Testing split-radix SIMD vs scalar...")
+
+    var sizes = List[Int]()
+    sizes.append(64)
+    sizes.append(256)
+    sizes.append(512)
+
+    for idx in range(len(sizes)):
+        var N = sizes[idx]
+        var cache = SplitRadixCache(N)
+
+        # Create test signal
+        var signal = List[Float32]()
+        for i in range(N):
+            signal.append(Float32(sin(2.0 * pi * 3.0 * Float32(i) / Float32(N))))
+
+        # Compute with both methods
+        var result_scalar = fft_split_radix(signal, cache)
+        var result_simd = fft_split_radix_simd(signal, cache)
+
+        # Compare results
+        var max_diff: Float32 = 0.0
+        for i in range(N):
+            var diff_r = abs(result_scalar.real[i] - result_simd.real[i])
+            var diff_i = abs(result_scalar.imag[i] - result_simd.imag[i])
+            if diff_r > max_diff:
+                max_diff = diff_r
+            if diff_i > max_diff:
+                max_diff = diff_i
+
+        if max_diff > 1e-4:
+            print("  ERROR: N=" + String(N) + " max diff = " + String(max_diff))
+            raise Error("Split-radix SIMD doesn't match scalar for N=" + String(N))
+
+    print("  ✓ Split-radix SIMD matches scalar for all sizes")
+
+
+# ==============================================================================
 # Test Runner
 # ==============================================================================
 
@@ -781,6 +953,16 @@ fn main() raises:
     test_radix4_cached_vs_original()
     test_radix4_cached_simd_vs_scalar()
     test_radix4_zero_allocation()
+
+    # Four-step cache-blocked FFT tests (Stage 3)
+    print("\n--- Four-Step Cache-Blocked FFT Tests (Stage 3) ---\n")
+    test_four_step_vs_original()
+    test_four_step_large_n()
+
+    # Split-radix FFT tests
+    print("\n--- Split-Radix FFT Tests ---\n")
+    test_split_radix_vs_original()
+    test_split_radix_simd_vs_scalar()
 
     print("\n" + "="*60)
     print("✓ All FFT tests passed!")
