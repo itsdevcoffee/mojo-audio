@@ -344,10 +344,11 @@ let mel = mojo_mel_spectrogram_compute(&audio, config);
 
 ## Limitations
 
-- **Whisper-specific parameters:** Currently hardcoded for Whisper (16kHz, 400 n_fft, 80 mels). Other models may need different settings.
 - **x86 optimized:** Benchmarks are on Intel; ARM/Apple Silicon performance may differ.
 - **Memory:** Holds full spectrogram in memory. For very long audio (>10 min), consider chunked processing.
 - **Audio format:** Expects raw Float32 samples. Use another library for file I/O (WAV, MP3 decoding).
+
+*Note: All parameters (sample_rate, n_fft, hop_length, n_mels) are configurable via the FFI API. Defaults match Whisper v1/v2 (80 mels); set n_mels=128 for Whisper v3/Turbo.*
 
 ---
 
@@ -356,9 +357,9 @@ let mel = mojo_mel_spectrogram_compute(&audio, config);
 mojo-audio now powers the preprocessing pipeline in [Mojo Voice](https://mojovoice.ai), our developer-focused voice-to-text app.
 
 **Planned improvements:**
-- Whisper v3 support (128 mel bins)
-- ARM/Apple Silicon profiling
+- ARM/Apple Silicon profiling and optimization
 - Streaming API for real-time processing
+- Pre-built binaries for common platforms
 
 **Contributions welcome:** [github.com/itsdevcoffee/mojo-audio](https://github.com/itsdevcoffee/mojo-audio)
 
