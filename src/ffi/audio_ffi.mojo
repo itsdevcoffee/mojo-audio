@@ -117,6 +117,19 @@ fn bit_reverse(n: Int, bits: Int) -> Int:
         x >>= 1
     return result
 
+
+@always_inline
+fn digit_reverse_base4(index: Int, num_digits: Int) -> Int:
+    """Reverse base-4 digits for radix-4 FFT input permutation."""
+    var result = 0
+    var temp = index
+    for _ in range(num_digits):
+        var digit = temp % 4
+        temp = temp // 4
+        result = result * 4 + digit
+    return result
+
+
 fn log2_int(n: Int) -> Int:
     """Compute log2 of power-of-2 integer."""
     var result = 0
@@ -212,65 +225,76 @@ fn precompute_twiddle_factors(N: Int) -> List[Complex]:
     return twiddles^
 
 fn fft_radix4(signal: List[Float32], twiddles: List[Complex]) raises -> List[Complex]:
-    """Radix-4 FFT - faster than Radix-2."""
+    """Radix-4 DIT FFT for power-of-4 sizes."""
     var N = len(signal)
-    var log2_n = log2_int(N)
+    var log4_N = log2_int(N) // 2  # Number of radix-4 stages
 
-    # Initialize with bit-reversed input
+    # Step 1: Base-4 digit-reversed input permutation
     var result = List[Complex]()
     for i in range(N):
-        var reversed_idx = bit_reverse(i, log2_n)
+        var reversed_idx = digit_reverse_base4(i, log4_N)
         result.append(Complex(signal[reversed_idx], 0.0))
 
-    # Radix-4 stages
-    var stride = 1
-    while stride < N:
-        var group_size = 4 * stride
-        var twiddle_stride = N // group_size
+    # Step 2: DIT stages (stride INCREASES: 1, 4, 16, ...)
+    for stage in range(log4_N):
+        var stride = 1 << (2 * stage)        # 4^stage
+        var group_size = stride * 4           # Elements spanned by one butterfly
+        var num_groups = N // group_size      # Number of butterfly groups
 
-        for group_start in range(0, N, group_size):
+        for group in range(num_groups):
+            var group_start = group * group_size
+
             for k in range(stride):
-                # Get 4 butterfly indices
-                var i0 = group_start + k
-                var i1 = i0 + stride
-                var i2 = i1 + stride
-                var i3 = i2 + stride
+                # Gather 4 inputs
+                var idx0 = group_start + k
+                var idx1 = idx0 + stride
+                var idx2 = idx0 + 2 * stride
+                var idx3 = idx0 + 3 * stride
 
-                # Load inputs
-                var x0 = Complex(result[i0].real, result[i0].imag)
-                var x1 = Complex(result[i1].real, result[i1].imag)
-                var x2 = Complex(result[i2].real, result[i2].imag)
-                var x3 = Complex(result[i3].real, result[i3].imag)
+                var x0 = Complex(result[idx0].real, result[idx0].imag)
+                var x1 = Complex(result[idx1].real, result[idx1].imag)
+                var x2 = Complex(result[idx2].real, result[idx2].imag)
+                var x3 = Complex(result[idx3].real, result[idx3].imag)
 
-                # Radix-4 butterfly
-                var t0 = x0 + x2
-                var t1 = x0 - x2
-                var t2 = x1 + x3
-                var t3 = Complex(x1.imag - x3.imag, x3.real - x1.real)
+                # Compute twiddle factors
+                var tw_exp = k * num_groups
 
-                var y0 = t0 + t2
-                var y1 = t1 + t3
-                var y2 = t0 - t2
-                var y3 = t1 - t3
+                # Apply twiddles to x1, x2, x3 (x0 gets W^0 = 1)
+                var t0 = Complex(x0.real, x0.imag)
+                var t1: Complex
+                var t2: Complex
+                var t3: Complex
 
-                # Apply twiddle factors
-                var tw_idx = k * twiddle_stride
-                if tw_idx > 0 and tw_idx < len(twiddles):
-                    var w1 = Complex(twiddles[tw_idx].real, twiddles[tw_idx].imag)
-                    var w2 = Complex(twiddles[2 * tw_idx].real, twiddles[2 * tw_idx].imag)
-                    var w3 = Complex(twiddles[3 * tw_idx].real, twiddles[3 * tw_idx].imag)
+                if tw_exp == 0:
+                    t1 = Complex(x1.real, x1.imag)
+                    t2 = Complex(x2.real, x2.imag)
+                    t3 = Complex(x3.real, x3.imag)
+                else:
+                    var w1 = Complex(twiddles[tw_exp % N].real, twiddles[tw_exp % N].imag)
+                    var w2 = Complex(twiddles[(2 * tw_exp) % N].real, twiddles[(2 * tw_exp) % N].imag)
+                    var w3 = Complex(twiddles[(3 * tw_exp) % N].real, twiddles[(3 * tw_exp) % N].imag)
+                    t1 = x1 * w1
+                    t2 = x2 * w2
+                    t3 = x3 * w3
 
-                    y1 = y1 * w1
-                    y2 = y2 * w2
-                    y3 = y3 * w3
+                # DIT butterfly: 4-point DFT matrix
+                var y0 = t0 + t1 + t2 + t3
+
+                var neg_i_t1 = Complex(t1.imag, -t1.real)
+                var pos_i_t3 = Complex(-t3.imag, t3.real)
+                var y1 = t0 + neg_i_t1 - t2 + pos_i_t3
+
+                var y2 = t0 - t1 + t2 - t3
+
+                var pos_i_t1 = Complex(-t1.imag, t1.real)
+                var neg_i_t3 = Complex(t3.imag, -t3.real)
+                var y3 = t0 + pos_i_t1 - t2 + neg_i_t3
 
                 # Store results
-                result[i0] = Complex(y0.real, y0.imag)
-                result[i1] = Complex(y1.real, y1.imag)
-                result[i2] = Complex(y2.real, y2.imag)
-                result[i3] = Complex(y3.real, y3.imag)
-
-        stride *= 4
+                result[idx0] = Complex(y0.real, y0.imag)
+                result[idx1] = Complex(y1.real, y1.imag)
+                result[idx2] = Complex(y2.real, y2.imag)
+                result[idx3] = Complex(y3.real, y3.imag)
 
     return result^
 
@@ -328,36 +352,176 @@ fn fft_iterative_with_twiddles(
 
         return result^
 
+@always_inline
+fn complex_conjugate(c: Complex) -> Complex:
+    """Return conjugate of complex number: conj(a + bi) = a - bi."""
+    return Complex(c.real, -c.imag)
+
+
+@always_inline
+fn complex_mul_neg_i(c: Complex) -> Complex:
+    """Multiply complex by -i: (a + bi) * (-i) = b - ai."""
+    return Complex(c.imag, -c.real)
+
+
+fn _fft_complex(input: List[Complex], twiddles: List[Complex]) raises -> List[Complex]:
+    """
+    Complex FFT using iterative Cooley-Tukey (for packed RFFT input).
+    """
+    var N = len(input)
+
+    if N == 0 or (N & (N - 1)) != 0:
+        raise Error("FFT requires power of 2")
+
+    var log2_n = log2_int(N)
+
+    # Initialize with bit-reversed input
+    var result = List[Complex]()
+    for i in range(N):
+        var reversed_idx = bit_reverse(i, log2_n)
+        result.append(Complex(input[reversed_idx].real, input[reversed_idx].imag))
+
+    # Radix-2 butterfly stages
+    var size = 2
+    while size <= N:
+        var half_size = size // 2
+        var stride = N // size
+
+        for i in range(0, N, size):
+            for k in range(half_size):
+                var twiddle_idx = k * stride
+                var twiddle: Complex
+                if twiddle_idx < len(twiddles):
+                    twiddle = Complex(twiddles[twiddle_idx].real, twiddles[twiddle_idx].imag)
+                else:
+                    var angle = -2.0 * pi * Float32(twiddle_idx) / Float32(N)
+                    twiddle = Complex(Float32(cos(angle)), Float32(sin(angle)))
+
+                var idx1 = i + k
+                var idx2 = i + k + half_size
+
+                var t = twiddle * result[idx2]
+                var u = Complex(result[idx1].real, result[idx1].imag)
+
+                result[idx1] = u + t
+                result[idx2] = u - t
+
+        size *= 2
+
+    return result^
+
+
 fn rfft_true(signal: List[Float32], twiddles: List[Complex]) raises -> List[Complex]:
     """
-    Real FFT using full complex FFT - returns positive frequencies only.
+    True Real FFT using pack-FFT-unpack algorithm - 2x faster than full FFT!
 
-    For real-valued input, the FFT output has conjugate symmetry:
-    X[k] = conj(X[N-k]), so we only need bins 0 to N/2.
+    Algorithm:
+    1. Pack N real samples as N/2 complex numbers (adjacent pairs → real+imag)
+    2. Compute N/2-point complex FFT
+    3. Unpack to recover true N/2+1 frequency bins using conjugate symmetry
     """
     var N = len(signal)
     var fft_size = next_power_of_2(N)
     var half_size = fft_size // 2
+    var quarter_size = fft_size // 4
 
-    # Pad to power of 2
+    # Pad signal to power of 2 if needed
     var padded = List[Float32]()
     for i in range(N):
         padded.append(signal[i])
     for _ in range(N, fft_size):
         padded.append(0.0)
 
-    # Compute full FFT (all samples used correctly)
-    var full_fft = fft_iterative_with_twiddles(padded, twiddles)
+    # Step 1: Pack N reals as N/2 complex numbers
+    var packed_complex = List[Complex]()
+    for i in range(half_size):
+        packed_complex.append(Complex(padded[2 * i], padded[2 * i + 1]))
 
-    # Extract positive frequencies only (0 to N/2)
-    var result = List[Complex]()
-
-    # Bins 0 to N/2 (inclusive)
-    for k in range(half_size + 1):
-        if k < len(full_fft):
-            result.append(Complex(full_fft[k].real, full_fft[k].imag))
+    # Step 2: Compute N/2-point complex FFT on packed data
+    var half_twiddles = List[Complex]()
+    for i in range(half_size):
+        var idx = i * 2
+        if idx < len(twiddles):
+            half_twiddles.append(Complex(twiddles[idx].real, twiddles[idx].imag))
         else:
-            result.append(Complex(0.0, 0.0))
+            var angle = -2.0 * pi * Float32(i) / Float32(half_size)
+            half_twiddles.append(Complex(Float32(cos(angle)), Float32(sin(angle))))
+
+    var Z = _fft_complex(packed_complex, half_twiddles)
+
+    # Step 3: Unpack - recover true spectrum using conjugate symmetry
+    var result = List[Complex]()
+    for _ in range(half_size + 1):
+        result.append(Complex(0.0, 0.0))
+
+    # DC and Nyquist - special cases
+    result[0] = Complex(Z[0].real + Z[0].imag, 0.0)
+    result[half_size] = Complex(Z[0].real - Z[0].imag, 0.0)
+
+    # Handle middle bin (k=N/4) if it exists
+    if quarter_size > 0 and quarter_size < half_size:
+        var zk = Complex(Z[quarter_size].real, Z[quarter_size].imag)
+        var zk_conj = complex_conjugate(zk)
+        var even = Complex((zk.real + zk_conj.real) / 2.0, (zk.imag + zk_conj.imag) / 2.0)
+        var odd = Complex((zk.real - zk_conj.real) / 2.0, (zk.imag - zk_conj.imag) / 2.0)
+
+        var odd_rotated = complex_mul_neg_i(odd)
+        var final_odd = complex_mul_neg_i(odd_rotated)
+
+        result[quarter_size] = even + final_odd
+
+    # Main loop: k = 1 to N/4-1 (and their mirrors at N/2-k)
+    for k in range(1, quarter_size):
+        var mirror_k = half_size - k
+
+        var zk = Complex(Z[k].real, Z[k].imag)
+        var zk_mirror = complex_conjugate(Complex(Z[mirror_k].real, Z[mirror_k].imag))
+
+        var even = Complex(
+            (zk.real + zk_mirror.real) / 2.0,
+            (zk.imag + zk_mirror.imag) / 2.0
+        )
+        var odd = Complex(
+            (zk.real - zk_mirror.real) / 2.0,
+            (zk.imag - zk_mirror.imag) / 2.0
+        )
+
+        var twiddle: Complex
+        if k < len(twiddles):
+            twiddle = Complex(twiddles[k].real, twiddles[k].imag)
+        else:
+            var angle = -2.0 * pi * Float32(k) / Float32(fft_size)
+            twiddle = Complex(Float32(cos(angle)), Float32(sin(angle)))
+
+        var odd_rotated = odd * twiddle
+        var odd_final = complex_mul_neg_i(odd_rotated)
+
+        result[k] = even + odd_final
+
+        # Compute mirror bin
+        var mirror_twiddle: Complex
+        if mirror_k < len(twiddles):
+            mirror_twiddle = Complex(twiddles[mirror_k].real, twiddles[mirror_k].imag)
+        else:
+            var angle = -2.0 * pi * Float32(mirror_k) / Float32(fft_size)
+            mirror_twiddle = Complex(Float32(cos(angle)), Float32(sin(angle)))
+
+        var zk_for_mirror = Complex(Z[mirror_k].real, Z[mirror_k].imag)
+        var zk_mirror_for_mirror = complex_conjugate(Complex(Z[k].real, Z[k].imag))
+
+        var even_mirror = Complex(
+            (zk_for_mirror.real + zk_mirror_for_mirror.real) / 2.0,
+            (zk_for_mirror.imag + zk_mirror_for_mirror.imag) / 2.0
+        )
+        var odd_mirror = Complex(
+            (zk_for_mirror.real - zk_mirror_for_mirror.real) / 2.0,
+            (zk_for_mirror.imag - zk_mirror_for_mirror.imag) / 2.0
+        )
+
+        var odd_mirror_rotated = odd_mirror * mirror_twiddle
+        var odd_mirror_final = complex_mul_neg_i(odd_mirror_rotated)
+
+        result[mirror_k] = even_mirror + odd_mirror_final
 
     return result^
 
