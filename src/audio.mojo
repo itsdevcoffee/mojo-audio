@@ -9,14 +9,19 @@ from math import cos, sqrt, log, sin, atan2, exp
 from math.constants import pi
 from memory import UnsafePointer, alloc
 from algorithm import parallelize
-from sys.info import num_physical_cores
+from sys.info import num_physical_cores, simd_width_of
 
 # ==============================================================================
 # Type Configuration (Float32 for 2x SIMD throughput!)
 # ==============================================================================
 
 comptime AudioFloat = DType.float32  # Audio processing uses Float32
-comptime SIMD_WIDTH = 16  # Float32: 16 elements (vs Float64: 8 elements)
+
+# Optimal SIMD width detected at compile-time based on CPU capabilities:
+# - AVX-512: 16 floats (512 bits / 32 bits)
+# - AVX2/AVX: 8 floats (256 bits / 32 bits)
+# - SSE: 4 floats (128 bits / 32 bits)
+comptime OPTIMAL_SIMD_WIDTH = simd_width_of[DType.float32]()
 
 fn pow_f32(base: Float32, exponent: Float32) -> Float32:
     """Power function for Float32."""
@@ -54,8 +59,8 @@ fn apply_window_simd(signal: List[Float32], window: List[Float32]) raises -> Lis
     for _ in range(N):
         result.append(0.0)
 
-    # SIMD with Float32 - 16 elements at once (2x vs Float64!)
-    comptime simd_width = 16
+    # SIMD with optimal width for CPU (AVX-512: 16, AVX2: 8)
+    comptime simd_width = OPTIMAL_SIMD_WIDTH
 
     var i = 0
     while i + simd_width <= N:
@@ -68,7 +73,7 @@ fn apply_window_simd(signal: List[Float32], window: List[Float32]) raises -> Lis
             sig_vec[j] = signal[i + j]
             win_vec[j] = window[i + j]
 
-        # SIMD multiply (16 at once!)
+        # SIMD multiply
         var res_vec = sig_vec * win_vec
 
         # Store back
@@ -1006,8 +1011,8 @@ fn power_spectrum(fft_output: List[Complex], norm_factor: Float32 = 1.0) -> List
     for _ in range(N):
         result.append(0.0)
 
-    # SIMD processing with Float32 (16 elements!)
-    comptime simd_width = 16
+    # SIMD processing with optimal width for CPU
+    comptime simd_width = OPTIMAL_SIMD_WIDTH
     var norm_vec = SIMD[DType.float32, simd_width](norm_factor)
 
     var i = 0
@@ -1089,7 +1094,7 @@ fn fft_radix2_simd(mut data: ComplexArray, twiddles: TwiddleFactorsSoA) raises:
             data.imag[j] = tmp_i
 
     # Step 2: Butterfly stages with SIMD
-    comptime simd_width = 8
+    comptime simd_width = OPTIMAL_SIMD_WIDTH
 
     var size = 2
     while size <= N:
@@ -1188,7 +1193,7 @@ fn fft_radix4_simd(mut data: ComplexArray, twiddles: TwiddleFactorsSoA) raises:
             data.real[j] = tmp_r
             data.imag[j] = tmp_i
 
-    comptime simd_width = 8
+    comptime simd_width = OPTIMAL_SIMD_WIDTH
 
     # Step 2: DIT stages with SIMD
     for stage in range(log4_N):
@@ -1579,7 +1584,7 @@ fn fft_radix4_cached_simd(signal: List[Float32], cache: Radix4TwiddleCache) rais
     var data = ComplexArray(signal)
 
     var num_stages = cache.num_stages
-    comptime simd_width = 8
+    comptime simd_width = OPTIMAL_SIMD_WIDTH
 
     # Step 1: Base-4 digit-reversal permutation
     for i in range(N):
@@ -1828,7 +1833,7 @@ fn fft_radix4_inplace_simd(mut data: ComplexArray, cache: Radix4TwiddleCache) ra
         raise Error("Data length doesn't match cache size")
 
     var num_stages = cache.num_stages
-    comptime simd_width = 8
+    comptime simd_width = OPTIMAL_SIMD_WIDTH
 
     # Step 1: Base-4 digit-reversal permutation
     for i in range(N):
@@ -2134,7 +2139,7 @@ fn fft_split_radix_stages(mut data: ComplexArray, cache: SplitRadixCache) raises
     - One radix-4-like computation for indices j+m/4 and j+3m/4
     """
     var N = cache.N
-    comptime simd_width = 8
+    comptime simd_width = OPTIMAL_SIMD_WIDTH
 
     # Get twiddle pointers (w3 twiddles not needed with radix-2 fallback)
     var w_r = cache.twiddle_real
@@ -2286,7 +2291,7 @@ fn fft_split_radix_stages_simd(mut data: ComplexArray, cache: SplitRadixCache) r
     SIMD-optimized split-radix butterfly stages.
     """
     var N = cache.N
-    comptime simd_width = 8
+    comptime simd_width = OPTIMAL_SIMD_WIDTH
 
     # Get twiddle pointers (w3 twiddles not needed with radix-2 fallback)
     var w_r = cache.twiddle_real
@@ -2975,7 +2980,7 @@ fn power_spectrum_simd(data: ComplexArray, norm_factor: Float32 = 1.0) -> List[F
     for _ in range(N):
         result.append(0.0)
 
-    comptime simd_width = 8
+    comptime simd_width = OPTIMAL_SIMD_WIDTH
     var norm_vec = SIMD[DType.float32, simd_width](norm_factor)
 
     var real_ptr = data.real.unsafe_ptr()
