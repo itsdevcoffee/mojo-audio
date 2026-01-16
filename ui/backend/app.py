@@ -47,6 +47,7 @@ class BenchmarkResult(BaseModel):
     implementation: str
     duration: int
     avg_time_ms: float
+    std_time_ms: float = 0.0
     throughput_realtime: float
     iterations: int
     success: bool
@@ -92,14 +93,18 @@ async def benchmark_mojo(config: BenchmarkConfig) -> BenchmarkResult:
                 detail=f"Mojo benchmark failed: {result.stderr}"
             )
 
-        # Parse simple output (just the time in ms)
-        avg_time = float(result.stdout.strip())
+        # Parse output (avg,std format)
+        output = result.stdout.strip()
+        parts = output.split(',')
+        avg_time = float(parts[0])
+        std_time = float(parts[1]) if len(parts) > 1 else 0.0
         throughput = config.duration / (avg_time / 1000.0)
 
         return BenchmarkResult(
             implementation="mojo-audio",
             duration=config.duration,
             avg_time_ms=avg_time,
+            std_time_ms=std_time,
             throughput_realtime=throughput,
             iterations=config.iterations,
             success=True
@@ -144,14 +149,18 @@ async def benchmark_librosa(config: BenchmarkConfig) -> BenchmarkResult:
                 detail=f"librosa benchmark failed: {result.stderr}"
             )
 
-        # Parse simple output (just the time in ms)
-        avg_time = float(result.stdout.strip())
+        # Parse output (avg,std format)
+        output = result.stdout.strip()
+        parts = output.split(',')
+        avg_time = float(parts[0])
+        std_time = float(parts[1]) if len(parts) > 1 else 0.0
         throughput = config.duration / (avg_time / 1000.0)
 
         return BenchmarkResult(
             implementation="librosa",
             duration=config.duration,
             avg_time_ms=avg_time,
+            std_time_ms=std_time,
             throughput_realtime=throughput,
             iterations=config.iterations,
             success=True

@@ -14,7 +14,7 @@ def benchmark_mojo_single(duration_s: int, iterations: int = 20, n_fft: int = 40
 
     Uses random seed=42 for reproducibility (same as librosa).
 
-    Returns: average time in milliseconds
+    Returns: (average time in ms, std dev in ms)
     """
     import subprocess
 
@@ -23,6 +23,7 @@ def benchmark_mojo_single(duration_s: int, iterations: int = 20, n_fft: int = 40
 from audio import mel_spectrogram
 from time import perf_counter_ns
 from random import seed, random_float64
+from math import sqrt
 
 fn main() raises:
     # Generate random audio with FIXED SEED (same data as librosa!)
@@ -45,13 +46,21 @@ fn main() raises:
         # Use result to prevent dead code elimination
         var checksum = result[0][0]
 
-    # Calculate statistics
+    # Calculate mean
     var sum_times: Float64 = 0.0
     for i in range(len(times)):
         sum_times += times[i]
     var avg_ms = sum_times / Float64(len(times))
 
-    print(avg_ms)
+    # Calculate std dev
+    var sum_sq_diff: Float64 = 0.0
+    for i in range(len(times)):
+        var diff = times[i] - avg_ms
+        sum_sq_diff += diff * diff
+    var std_ms = sqrt(sum_sq_diff / Float64(len(times)))
+
+    # Output: avg,std
+    print(String(avg_ms) + "," + String(std_ms))
 """
 
     # Write temp file
@@ -69,13 +78,17 @@ fn main() raises:
 
     if result.returncode != 0:
         print(f"Error: {result.stderr}", file=sys.stderr)
-        return None
+        return None, None
 
-    # Parse output (just the number)
+    # Parse output (avg,std format)
     try:
-        return float(result.stdout.strip().split('\n')[-1])
+        line = result.stdout.strip().split('\n')[-1]
+        parts = line.split(',')
+        avg = float(parts[0])
+        std = float(parts[1]) if len(parts) > 1 else 0.0
+        return avg, std
     except:
-        return None
+        return None, None
 
 
 def benchmark_librosa_single(duration_s: int, iterations: int = 20, n_fft: int = 400, hop_length: int = 160, n_mels: int = 80):
@@ -84,13 +97,13 @@ def benchmark_librosa_single(duration_s: int, iterations: int = 20, n_fft: int =
 
     Uses random seed=42 for reproducibility (same as mojo).
 
-    Returns: average time in milliseconds
+    Returns: (average time in ms, std dev in ms)
     """
     try:
         import librosa
     except ImportError:
         print("librosa not available", file=sys.stderr)
-        return None
+        return None, None
 
     # Create test audio with FIXED SEED (same data as mojo!)
     sr = 16000
@@ -117,7 +130,7 @@ def benchmark_librosa_single(duration_s: int, iterations: int = 20, n_fft: int =
         end = time.perf_counter()
         times.append((end - start) * 1000)  # Convert to ms
 
-    return np.mean(times)
+    return np.mean(times), np.std(times)
 
 
 if __name__ == "__main__":
@@ -133,14 +146,15 @@ if __name__ == "__main__":
     n_mels = int(sys.argv[6]) if len(sys.argv) > 6 else 80
 
     if implementation == "mojo":
-        result = benchmark_mojo_single(duration, iterations, n_fft, hop_length, n_mels)
+        avg, std = benchmark_mojo_single(duration, iterations, n_fft, hop_length, n_mels)
     elif implementation == "librosa":
-        result = benchmark_librosa_single(duration, iterations, n_fft, hop_length, n_mels)
+        avg, std = benchmark_librosa_single(duration, iterations, n_fft, hop_length, n_mels)
     else:
         print(f"Unknown implementation: {implementation}", file=sys.stderr)
         sys.exit(1)
 
-    if result:
-        print(f"{result:.3f}")
+    if avg is not None:
+        # Output: avg,std
+        print(f"{avg:.3f},{std:.3f}")
     else:
         sys.exit(1)

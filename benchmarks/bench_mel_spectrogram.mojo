@@ -2,20 +2,23 @@
 Benchmark mel spectrogram performance.
 
 Measures time to compute mel spectrogram for various audio lengths.
+Uses random audio data for fair comparison with librosa.
 """
 
 from audio import mel_spectrogram
 from time import perf_counter_ns
+from random import seed, random_float64
 
 
 fn benchmark_mel_spec(audio_seconds: Int, iterations: Int) raises:
     """Benchmark mel spectrogram for given audio length (Float32)."""
     print("Benchmarking", audio_seconds, "seconds of audio...")
 
-    # Create test audio (Float32 for 2x SIMD!)
+    # Create random test audio (same seed as librosa for reproducibility)
+    seed(42)
     var audio = List[Float32]()
     for _ in range(audio_seconds * 16000):
-        audio.append(0.1)
+        audio.append(Float32(random_float64(0.0, 0.1)))
 
     # Warmup
     _ = mel_spectrogram(audio)

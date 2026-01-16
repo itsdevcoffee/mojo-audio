@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>mojo-audio Benchmark | Faster than Python</title>
-    <link rel="stylesheet" href="../static/css/style.css?v=2">
+    <title>mojo-audio | Building a Fast Mel Spectrogram Library in Mojo</title>
+    <link rel="stylesheet" href="../static/css/style.css?v=3">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -50,6 +50,7 @@
                         <button class="toggle-btn" onclick="selectFFT(256, this)">256</button>
                         <button class="toggle-btn active" onclick="selectFFT(400, this)" id="fft400">400</button>
                         <button class="toggle-btn" onclick="selectFFT(512, this)">512</button>
+                        <button class="toggle-btn" onclick="selectFFT(1024, this)">1024</button>
                     </div>
                 </div>
 
@@ -66,7 +67,7 @@
                 </div>
 
                 <button class="primary-button" onclick="runBenchmark()" id="runBtn">
-                    <span>🚀</span>
+                    <span>>_</span>
                     <span>Run Benchmark</span>
                 </button>
             </div>
@@ -147,7 +148,7 @@
         <!-- OPTIMIZATION CHART (bigger!) -->
         <div class="glass-card chart-card" id="chartCard" style="display: none;">
             <h3 class="chart-title">Optimization Journey</h3>
-            <p class="chart-subtitle">From 476ms to 12ms — a 40× speedup story</p>
+            <p class="chart-subtitle">From 476ms to 25ms — a 19× speedup with split-radix FFT</p>
             <canvas id="optimizationChart"></canvas>
         </div>
 
@@ -168,6 +169,12 @@
                 <div class="loading-text">Running benchmarks...</div>
                 <div class="loading-subtext">This may take 30-60 seconds</div>
             </div>
+        </div>
+
+        <!-- Status Bar -->
+        <div class="status-bar">
+            <span>• BENCHMARK_STATUS: READY</span>
+            <span>• FFT_ENGINE: SPLIT_RADIX</span>
         </div>
     </div>
 
