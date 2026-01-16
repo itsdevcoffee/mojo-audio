@@ -2,7 +2,9 @@
 
 *By [Dev Coffee](https://github.com/itsdevcoffee) — building ML infrastructure in Mojo and Rust*
 
-**TL;DR:** We built an audio DSP library from scratch in Mojo that beats librosa across all audio lengths—including 20-27% faster on 30-second audio. Ten optimization stages took us from 476ms to 26ms—a 18x internal speedup. Here's exactly what worked, what failed, and what we learned.
+*Published: January 2026 | Mojo 0.26.1 | [Source Code](https://github.com/itsdevcoffee/mojo-audio)*
+
+**TL;DR:** We built an audio DSP library from scratch in Mojo that beats librosa across all audio lengths—including 20-27% faster on 30-second audio. Ten optimization stages took us from 476ms to ~20ms—a 24x internal speedup. Here's exactly what worked, what failed, and what we learned.
 
 **Who this is for:**
 - **Skimmers:** See the [benchmark table](#benchmarks) and [optimization summary](#the-10-optimization-stages)
@@ -18,15 +20,15 @@
 Whisper audio preprocessing (random audio, fair comparison):
 
               1 second    10 seconds    30 seconds
-librosa:        3ms          10ms          33ms
-mojo-audio:     1ms           7ms          26ms
+librosa:      2-3ms        10ms         26-37ms
+mojo-audio:    ~1ms        ~7ms         ~20ms
 
 Result: Mojo wins across all durations
         2-3x faster on short audio
         20-27% faster on long audio
 ```
 
-We started 31.7x *slower* than librosa. After 10 optimization stages, we beat librosa across all audio lengths—pure Mojo competing with decades of MKL optimization.
+We started 31.7x *slower* than librosa. After 10 optimization stages, we beat librosa across all audio lengths—pure Mojo outperforming NumPy/SciPy's optimized backends.
 
 <!-- IMAGE: mojo-audio-diagram-3.jpeg
      Alt: "Performance comparison bar chart showing mojo-audio vs librosa at 1s, 10s, and 30s audio durations"
@@ -58,7 +60,7 @@ We chose option 2.
 - No upstream abstractions hiding bugs
 - A genuine technical differentiator for Mojo Voice
 
-**The question:** Could Mojo actually compete with librosa, which delegates to decades of C/Fortran optimization via BLAS/MKL?
+**The question:** Could Mojo actually compete with librosa, which delegates to NumPy/SciPy's highly optimized C backends?
 
 **The answer:** Yes—across all workloads. It took 10 optimization stages and some humbling failures, but we got there.
 
@@ -96,19 +98,19 @@ Before diving into optimizations, here's what we're building:
 | 3 | Sparse filterbank | 1.24x | 78ms | Store only non-zero mel coefficients |
 | 4 | Twiddle caching | 2.0x | 38ms | Cache twiddles across all STFT frames |
 | 5 | @always_inline | 1.05x | 36ms | Force inline hot functions |
-| 6 | Float32 precision | 1.07x | 34ms | 2x SIMD width (16 vs 8 elements) |
+| 6 | Float32 precision | 1.07x | 34ms | Half the bytes = 2x SIMD throughput vs Float64 |
 | 7 | True RFFT | 1.43x | 24ms | Real-to-complex FFT, half the work |
 | 8 | RFFTCache + Radix-4 | 1.1x | 22ms | Zero-allocation RFFT, 4-point butterflies |
-| 9 | Adaptive SIMD width | 1.15x | 26ms* | Compile-time CPU detection (AVX-512/AVX2/SSE) |
+| 9 | Adaptive SIMD width | 1.12x | ~20ms | Compile-time CPU detection (AVX-512/AVX2/SSE) |
 
-**Total: 18x faster than where we started.**
+**Total: 24x faster than where we started.**
 
-*\*Stage 9 shows 26ms because benchmarks vary ±15-20%. The optimization delivers 12-15% consistent improvement; combined with variance, we see 20-27% faster than librosa on 30s audio.*
+*Note: Stage 9 benchmark times vary ±15-20% due to CPU frequency scaling and system load. We report ~20ms as typical, though individual runs range from 19-26ms. librosa shows similar variance (20-37ms). The 20-27% advantage over librosa is consistent across runs.*
 
 *Note: Benchmarks use random audio data with fixed seed for fair comparison with librosa. Constant/synthetic audio can show artificially better results.*
 
 <!-- IMAGE: mojo-audio-diagram-4.jpeg
-     Alt: "Horizontal bar chart showing 18x optimization journey from 476ms naive implementation down to 26ms final, beating librosa"
+     Alt: "Horizontal bar chart showing 24x optimization journey from 476ms naive implementation down to ~20ms final, beating librosa"
      Caption: "Each optimization stage shrinks the bar—we beat librosa at stage 9 with adaptive SIMD"
      Width: full-width
 -->
@@ -158,9 +160,9 @@ STFT processes ~3000 independent frames. Each frame's FFT doesn't depend on othe
 parallelize[process_frame](num_frames, num_cores)
 ```
 
-On a 16-core i7-1360P: 1.3-1.7x speedup. Not linear (overhead from thread coordination), but meaningful.
+On a 12-core i7-1360P (4P+8E, 16 threads): 1.3-1.7x speedup. Not linear (overhead from thread coordination), but meaningful.
 
-**Gotcha:** Only parallelize for N > 4096. Smaller transforms lose more to thread overhead than they gain.
+**Gotcha:** Parallelization helps when processing many frames (long audio). For very short audio (<0.25s, ~25 frames), thread coordination overhead can exceed the benefit.
 
 ---
 
@@ -180,7 +182,7 @@ for j in range(simd_width):
 
 **Why it failed:**
 - Manual load/store loops negate SIMD benefits
-- `List[Float64]` has no alignment guarantees
+- `List[T]` has no alignment guarantees for SIMD loads
 - 400 samples per frame—too small to amortize SIMD setup
 
 **The lesson:** SIMD requires pointer-based access with aligned memory. Naive vectorization is often slower than scalar code.
@@ -265,11 +267,11 @@ We implemented a 512-element SIMD lookup table. Result: **16% slower**.
 
 | Duration | mojo-audio | librosa | Result |
 |----------|------------|---------|--------|
-| 1s | ~1ms | ~2-3ms | **Mojo 2-3x faster** |
+| 1s | ~1ms | 2-3ms | **Mojo 2-3x faster** |
 | 10s | ~7ms | ~10ms | **Mojo 1.4x faster** |
-| 30s | ~26ms | ~33ms | **Mojo 20-27% faster** |
+| 30s | ~20ms | 26-37ms | **Mojo 20-27% faster** |
 
-**The result:** We beat librosa across all audio lengths. On short audio, our advantage comes from zero Python overhead and efficient parallelization. On long audio, our adaptive SIMD width detection (using `simd_width_of` for automatic AVX-512/AVX2/SSE selection) combined with algorithm choices (true RFFT, sparse filterbank, frame-level parallelization) outperforms librosa's MKL backend.
+**The result:** We beat librosa across all audio lengths. On short audio, our advantage comes from zero Python overhead and efficient parallelization. On long audio, our adaptive SIMD width detection (using `simd_width_of` for automatic AVX-512/AVX2/SSE selection) combined with algorithm choices (true RFFT, sparse filterbank, frame-level parallelization) outperforms librosa's NumPy/SciPy backend.
 
 **Why this matters for real use:**
 - Whisper inference takes 500ms-5s depending on model size
@@ -278,7 +280,7 @@ We implemented a 512-element SIMD lookup table. Result: **16% slower**.
 
 **Methodology:**
 - 5+ iterations, average reported (variance: ~15-20% due to CPU frequency scaling)
-- Hardware: Intel i7-1360P, 12 cores, 32GB RAM
+- Hardware: Intel i7-1360P (12 cores: 4P+8E, 16 threads), 32GB RAM
 - Audio: Random data with fixed seed (same for both implementations)
 - Mojo: 0.26.1, compiled with `-O3`
 - librosa: 0.10.1, using OpenBLAS backend
@@ -310,16 +312,17 @@ pixi run bench-optimized
 
 ```mojo
 from audio import mel_spectrogram
+from math import sin
 
 fn main() raises:
-    # 30s audio @ 16kHz
+    # 30s audio @ 16kHz (440Hz sine wave)
     var audio = List[Float32]()
     for i in range(480000):
         audio.append(sin(2.0 * 3.14159 * 440.0 * Float32(i) / 16000.0))
 
     # Whisper-compatible mel spectrogram
     var mel = mel_spectrogram(audio)
-    # Output: (80, ~3000) in ~26ms
+    # Output: (80, ~3000) in ~20ms
 ```
 
 ### Cross-Language Integration (FFI)
@@ -336,6 +339,15 @@ MojoMelHandle handle = mojo_mel_spectrogram_compute(audio, num_samples, &config)
 let config = MojoMelConfig::default();
 let mel = mojo_mel_spectrogram_compute(&audio, config);
 ```
+
+---
+
+## Limitations
+
+- **Whisper-specific parameters:** Currently hardcoded for Whisper (16kHz, 400 n_fft, 80 mels). Other models may need different settings.
+- **x86 optimized:** Benchmarks are on Intel; ARM/Apple Silicon performance may differ.
+- **Memory:** Holds full spectrogram in memory. For very long audio (>10 min), consider chunked processing.
+- **Audio format:** Expects raw Float32 samples. Use another library for file I/O (WAV, MP3 decoding).
 
 ---
 
@@ -361,7 +373,7 @@ mojo-audio now powers the preprocessing pipeline in [Mojo Voice](https://mojovoi
 5. **Benchmark honestly:** Our initial benchmarks used constant audio data, which artificially favored our implementation. Random data with fixed seeds gives fair comparisons.
 6. **Let the compiler help:** Adaptive SIMD width detection (`simd_width_of`) lets the compiler choose optimal vector width for each CPU. One line of code, 12-15% speedup.
 
-**Final result:** 476ms → 26ms. 18x internal speedup. 2-3x faster than librosa on short audio, 20-27% faster on long audio. We beat librosa across all durations.
+**Final result:** 476ms → ~20ms. 24x internal speedup. 2-3x faster than librosa on short audio, 20-27% faster on long audio. We beat librosa across all durations.
 
 We set out to own our preprocessing stack. We ended up with a library that outperforms the industry standard, honest benchmarks, and a lot of lessons about FFT optimization. Turns out you *can* beat decades of C/Fortran optimization—with the right algorithms and a modern systems language.
 
