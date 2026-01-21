@@ -23,6 +23,7 @@ demo = "mojo -I src examples/mel_demo.mojo"
 bench = "mojo -I src benchmarks/bench_mel_spectrogram.mojo"
 bench-optimized = "mojo -O3 -I src benchmarks/bench_mel_spectrogram.mojo"
 bench-python = "python benchmarks/compare_librosa.py"
+bench-compare = "python benchmarks/compare_all.py"
 
 # Development
 repl = "mojo"
