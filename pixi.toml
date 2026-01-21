@@ -24,6 +24,7 @@ bench = "mojo -I src benchmarks/bench_mel_spectrogram.mojo"
 bench-optimized = "mojo -O3 -I src benchmarks/bench_mel_spectrogram.mojo"
 bench-python = "python benchmarks/compare_librosa.py"
 bench-compare = "python benchmarks/compare_all.py"
+bench-stable = "python benchmarks/bench_stable.py"
 
 # Development
 repl = "mojo"
