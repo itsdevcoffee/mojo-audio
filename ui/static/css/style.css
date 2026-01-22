@@ -785,3 +785,289 @@ body {
 html {
     scroll-behavior: smooth;
 }
+
+/* ===== ADVANCED SETTINGS (Minimal) ===== */
+.advanced-card {
+    padding: 0;
+    overflow: hidden;
+}
+
+.advanced-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-3) var(--space-5);
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.advanced-header:hover {
+    background: rgba(0, 255, 157, 0.03);
+}
+
+.advanced-title {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.advanced-content {
+    padding: var(--space-4) var(--space-5);
+    max-height: 300px;
+    overflow: hidden;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+
+.advanced-content.collapsed {
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    opacity: 0;
+}
+
+/* Compact Row Layout */
+.adv-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+}
+
+.adv-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    width: 52px;
+    flex-shrink: 0;
+}
+
+/* Signal Pills */
+.signal-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.signal-pill {
+    padding: 5px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(0, 255, 157, 0.15);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    position: relative;
+}
+
+.signal-pill:hover {
+    border-color: rgba(0, 255, 157, 0.3);
+    color: var(--text-primary);
+}
+
+.signal-pill.selected {
+    background: var(--green-primary);
+    border-color: var(--green-primary);
+    color: var(--bg-primary);
+}
+
+.signal-pill .pill-icon {
+    font-size: 12px;
+}
+
+.signal-pill.recommended::before {
+    content: '';
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 6px;
+    height: 6px;
+    background: var(--green-primary);
+    border-radius: 50%;
+    border: 1px solid var(--bg-primary);
+}
+
+.signal-pill.selected.recommended::before {
+    background: var(--bg-primary);
+    border-color: var(--green-primary);
+}
+
+/* Compact Input */
+.compact-input {
+    width: 72px;
+    height: 26px;
+    border-radius: 5px;
+    border: 1px solid rgba(0, 255, 157, 0.2);
+    text-align: center;
+    font-size: 12px;
+    font-weight: 500;
+    background: rgba(0, 255, 157, 0.05);
+    color: var(--text-primary);
+}
+
+.compact-input:focus {
+    outline: none;
+    border-color: var(--green-primary);
+}
+
+/* Compact Number Input */
+.number-input.compact {
+    gap: 4px;
+}
+
+.number-input.compact .number-btn {
+    width: 24px;
+    height: 24px;
+    font-size: 12px;
+}
+
+.number-input.compact input {
+    width: 36px;
+    height: 24px;
+    font-size: 11px;
+}
+
+/* Toggle Switch (smaller) */
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 255, 157, 0.1);
+    border: 1px solid rgba(0, 255, 157, 0.2);
+    transition: all 0.2s ease;
+    border-radius: 20px;
+}
+
+.toggle-slider:before {
+    position: absolute;
+    content: "";
+    height: 14px;
+    width: 14px;
+    left: 2px;
+    bottom: 2px;
+    background: var(--text-muted);
+    transition: all 0.2s ease;
+    border-radius: 50%;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+    background: rgba(0, 255, 157, 0.2);
+    border-color: var(--green-primary);
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+    transform: translateX(16px);
+    background: var(--green-primary);
+    box-shadow: 0 0 8px rgba(0, 255, 157, 0.4);
+}
+
+/* Stable Control Inline */
+.stable-control {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+}
+
+.stable-runs-inline {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    animation: fadeIn 0.2s ease;
+}
+
+.stable-x {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.stable-hint {
+    font-size: 10px;
+    color: var(--text-muted);
+}
+
+/* Stable Mode Indicator (in results) */
+.stable-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+    padding-top: var(--space-4);
+    border-top: 1px solid rgba(0, 255, 157, 0.1);
+}
+
+.stable-badge {
+    padding: 4px 10px;
+    background: rgba(0, 255, 157, 0.15);
+    border: 1px solid rgba(0, 255, 157, 0.3);
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--green-primary);
+}
+
+.stable-info {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+/* Loading Progress */
+.loading-progress {
+    margin-top: var(--space-4);
+    padding-top: var(--space-4);
+    border-top: 1px solid rgba(0, 255, 157, 0.1);
+}
+
+.progress-text {
+    font-size: 12px;
+    color: var(--green-primary);
+    font-weight: 500;
+}
+
+/* Fade In Animation */
+.fade-in {
+    animation: fadeIn 0.3s ease;
+}
+
+/* Responsive for Advanced Settings */
+@media (max-width: 768px) {
+    .signal-pills {
+        flex-wrap: wrap;
+    }
+
+    .adv-row {
+        flex-wrap: wrap;
+    }
+
+    .adv-label {
+        width: 100%;
+        margin-bottom: 4px;
+    }
+}

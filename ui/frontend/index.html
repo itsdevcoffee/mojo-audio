@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>mojo-audio | Building a Fast Mel Spectrogram Library in Mojo</title>
-    <link rel="stylesheet" href="../static/css/style.css?v=3">
+    <link rel="stylesheet" href="../static/css/style.css?v=6">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -73,6 +73,58 @@
             </div>
         </div>
 
+        <!-- ADVANCED SETTINGS -->
+        <div class="glass-card advanced-card">
+            <div class="advanced-header" onclick="toggleAdvanced()">
+                <span class="advanced-title">Advanced</span>
+                <button class="collapse-btn" id="advancedCollapseBtn">+</button>
+            </div>
+
+            <div class="advanced-content collapsed" id="advancedContent">
+                <!-- Signal Type - Compact Pills -->
+                <div class="adv-row">
+                    <span class="adv-label">Signal</span>
+                    <div class="signal-pills" id="signalGrid"></div>
+                </div>
+
+                <!-- Seed (shown only for random) -->
+                <div class="adv-row" id="seedContainer" style="display: none;">
+                    <span class="adv-label">Seed</span>
+                    <input type="number" class="compact-input" id="seedInput" value="42" min="0" max="999999">
+                </div>
+
+                <!-- Warmup -->
+                <div class="adv-row">
+                    <span class="adv-label">Warmup</span>
+                    <div class="number-input compact">
+                        <button class="number-btn" onclick="decrementWarmup()">−</button>
+                        <input type="number" id="warmupRuns" value="5" min="0" max="20" readonly>
+                        <button class="number-btn" onclick="incrementWarmup()">+</button>
+                    </div>
+                </div>
+
+                <!-- Stable Mode -->
+                <div class="adv-row">
+                    <span class="adv-label">Stable</span>
+                    <div class="stable-control">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="stableMode" onchange="toggleStableMode()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <div class="stable-runs-inline" id="stableRunsContainer" style="display: none;">
+                            <span class="stable-x">×</span>
+                            <div class="number-input compact">
+                                <button class="number-btn" onclick="decrementStableRuns()">−</button>
+                                <input type="number" id="stableRuns" value="5" min="2" max="10" readonly>
+                                <button class="number-btn" onclick="incrementStableRuns()">+</button>
+                            </div>
+                            <span class="stable-hint">runs</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- HERO RESULT (shows first, most prominent!) -->
         <div class="hero-result" id="heroResult" style="display: none;">
             <div class="hero-content">
@@ -80,6 +132,11 @@
                 <span class="hero-number" id="heroNumber">--</span>
                 <span class="hero-text">faster than librosa</span>
                 <span class="hero-badge">mojo-audio wins</span>
+            </div>
+            <!-- Stable mode indicator -->
+            <div class="stable-indicator" id="stableIndicator" style="display: none;">
+                <span class="stable-badge">📊 Stable Mode</span>
+                <span class="stable-info" id="stableInfo">Median of 5 runs</span>
             </div>
         </div>
 
@@ -167,7 +224,10 @@
             <div class="loading-card">
                 <div class="spinner"></div>
                 <div class="loading-text">Running benchmarks...</div>
-                <div class="loading-subtext">This may take 30-60 seconds</div>
+                <div class="loading-subtext" id="loadingSubtext">This may take 30-60 seconds</div>
+                <div class="loading-progress" id="loadingProgress" style="display: none;">
+                    <div class="progress-text" id="progressText">Run 1 of 5</div>
+                </div>
             </div>
         </div>
 
@@ -178,6 +238,6 @@
         </div>
     </div>
 
-    <script src="../static/js/main.js"></script>
+    <script src="../static/js/main.js?v=6"></script>
 </body>
 </html>
