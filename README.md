@@ -213,6 +213,47 @@ apply_normalization(mel_spec, norm_type) -> List[List[Float32]]
 
 ---
 
+## 🔗 **FFI Integration**
+
+Use mojo-audio from **C, Rust, Python, or any language** with C interop!
+
+```c
+// C/C++
+MojoMelConfig config = mojo_mel_config_default();
+MojoMelSpectrogram* mel = NULL;
+mojo_mel_spectrogram_compute(audio, 480000, &config, &mel);
+```
+
+```rust
+// Rust
+let config = mojo_mel_config_default();
+let mut mel: *mut MojoMelSpectrogram = std::ptr::null_mut();
+mojo_mel_spectrogram_compute(audio.as_ptr(), audio.len(), &config, &mut mel);
+```
+
+```python
+# Python (ctypes)
+lib = CDLL("libmojo_audio.so")
+mel = POINTER(MojoMelSpectrogram)()
+lib.mojo_mel_spectrogram_compute(audio, len(audio), byref(config), byref(mel))
+```
+
+**Features:**
+- Zero overhead - same performance as native Mojo
+- Type-safe C API with error handling
+- Memory management helpers
+- Comprehensive FFI guide with examples
+
+**Build & Install:**
+```bash
+pixi run build-ffi-optimized  # Build shared library
+pixi run install-ffi          # Install to ~/.local/
+```
+
+📚 **[Complete FFI Guide](docs/guides/01-10-2026-ffi-guide.md)** - C, Rust, Python examples
+
+---
+
 ## 🔧 **Normalization**
 
 Different ML models expect different input ranges. mojo-audio supports multiple normalization methods:
@@ -320,6 +361,7 @@ var mel = mel_spectrogram(audio, n_mels=128)
 ## 📚 **Documentation**
 
 - **[Complete Victory](docs/context/01-08-2026-complete-victory.md)** - How we beat Python (full story!)
+- **[FFI Integration Guide](docs/guides/01-10-2026-ffi-guide.md)** - Use from C, Rust, Python, etc.
 - **[Benchmark Results](benchmarks/RESULTS_2025-12-31.md)** - Timestamped performance data
 - **[Examples](examples/)** - Educational demos with explanations
 
