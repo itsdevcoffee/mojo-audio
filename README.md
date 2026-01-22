@@ -86,6 +86,9 @@ pixi run test
 
 # Run optimized benchmark
 pixi run bench-optimized
+
+# Or try the web UI
+pixi run ui  # Open http://localhost:8000
 ```
 
 ### Basic Usage
@@ -125,7 +128,25 @@ mojo -O3 -I src your_code.mojo
 
 **mojo-audio beats librosa at ALL durations!**
 
-### Run Benchmarks Yourself
+### 🌐 Web Benchmark UI
+
+Want to run benchmarks visually? We have an interactive web interface!
+
+```bash
+pixi run ui
+# Open http://localhost:8000 in your browser
+```
+
+**Features:**
+- 🎛️ **Interactive controls** - Adjust duration, FFT size, iterations on the fly
+- 📊 **Real-time visualization** - See benchmark results with charts
+- ⚙️ **Advanced settings** - Configure signal types (chirp, sine, random), warmup runs, stable mode
+- 🔗 **Shareable configs** - URL parameters sync so you can share exact benchmark setups
+- 📈 **Back-to-back comparison** - Runs mojo-audio and librosa side-by-side
+
+Perfect for exploring performance characteristics or demonstrating results!
+
+### Run Benchmarks Yourself (Command Line)
 
 ```bash
 # Full comparison (recommended)
