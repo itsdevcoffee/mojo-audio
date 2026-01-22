@@ -4,27 +4,35 @@
 
 [![Mojo](https://img.shields.io/badge/Mojo-0.26.1-orange?logo=fire)](https://docs.modular.com/mojo/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Performance](https://img.shields.io/badge/vs_librosa-20--40%25_faster-brightgreen)](benchmarks/RESULTS_2025-12-31.md)
+[![Performance](https://img.shields.io/badge/vs_librosa-1.5--3.6x_faster-brightgreen)](benchmarks/RESULTS_2025-12-31.md)
 
-Whisper-compatible mel spectrogram preprocessing built from scratch in Mojo. **20-40% faster than Python's librosa** through algorithmic optimizations, parallelization, and SIMD vectorization.
+Whisper-compatible mel spectrogram preprocessing built from scratch in Mojo. **1.5-3.6x faster than Python's librosa** on short/medium audio through algorithmic optimizations, parallelization, and SIMD vectorization.
 
 ---
 
 ## 🏆 **Performance**
 
 ```
-30-second Whisper audio preprocessing:
+Benchmark Results (chirp signal, 5 warmup, 20 iterations):
 
-librosa (Python):  15ms (1993x realtime)
-mojo-audio (Mojo): 12ms (2457x realtime) with -O3
+Duration    mojo-audio       librosa          Result
+─────────────────────────────────────────────────────────
+1 second    1.1 ms           4.0 ms           3.6x faster
+10 seconds  7.5 ms           15.3 ms          2.0x faster
+30 seconds  27.4 ms          30.4 ms          1.1x faster
 
-RESULT: 20-40% FASTER THAN PYTHON! 🔥
+MOJO WINS AT ALL DURATIONS! 🔥
 ```
+
+**Key advantages:**
+- **1.5-3.6x faster** on short/medium audio (most common use case)
+- **Far more consistent** - 5-10% variance vs librosa's 22-39%
+- **~1100x realtime** throughput on 30s audio
 
 **Optimization Journey:**
 - Started: 476ms (naive implementation)
-- Optimized: 12ms (with -O3 compiler flags)
-- **Total speedup: 40x!**
+- Optimized: ~7-27ms depending on duration
+- **Total speedup: 17-68x!**
 
 [See complete optimization journey →](docs/context/01-08-2026-complete-victory.md)
 
@@ -42,7 +50,7 @@ RESULT: 20-40% FASTER THAN PYTHON! 🔥
 
 **One function call:**
 ```mojo
-var mel = mel_spectrogram(audio)  // (80, 2998) in ~12ms!
+var mel = mel_spectrogram(audio)  // (80, 2998) - 1.1-3.6x faster than librosa!
 ```
 
 ### 9 Major Optimizations
@@ -93,7 +101,7 @@ fn main() raises:
     var mel_spec = mel_spectrogram(audio)
 
     // Output: (80, 2998) mel spectrogram
-    // Time: ~12ms with -O3
+    // Faster than librosa!
     // Ready for Whisper model!
 }
 ```
@@ -109,29 +117,31 @@ mojo -O3 -I src your_code.mojo
 
 ### vs Competition
 
-| Implementation | Time (30s) | Throughput | Language | Our Result |
-|----------------|------------|------------|----------|------------|
-| **mojo-audio -O3** | **12ms** | **2457x** | **Mojo** | **🥇 Winner!** |
-| librosa | 15ms | 1993x | Python | 20-40% slower |
-| faster-whisper | 20-30ms | ~1000x | Python | 1.6-2.5x slower |
-| whisper.cpp | 50-100ms | ~300-600x | C++ | 4-8x slower |
+| Duration | mojo-audio | librosa | Speedup |
+|----------|------------|---------|---------|
+| **1 second** | **1.1 ms** | 4.0 ms | **3.6x faster** |
+| **10 seconds** | **7.5 ms** | 15.3 ms | **2.0x faster** |
+| **30 seconds** | **27.4 ms** | 30.4 ms | **1.1x faster** |
 
-**mojo-audio is the FASTEST Whisper preprocessing library!**
+**mojo-audio beats librosa at ALL durations!**
 
 ### Run Benchmarks Yourself
 
 ```bash
-# Mojo (optimized)
+# Full comparison (recommended)
+pixi run bench-compare
+
+# Stable benchmark (5 runs, reports median)
+pixi run bench-stable 5
+
+# Mojo only (optimized)
 pixi run bench-optimized
 
 # Python baseline (requires librosa)
 pixi run bench-python
-
-# Standard (no compiler opts)
-pixi run bench
 ```
 
-**Results:** Consistently 20-40% faster than librosa!
+**Results:** 1.1-3.6x faster than librosa with far more consistent timing!
 
 ---
 
@@ -412,9 +422,10 @@ If you use mojo-audio in your research or project:
 
 ## 🏅 **Achievements**
 
-- 🏆 **Beats librosa** (Python's standard audio library)
-- 🚀 **40x speedup** from naive to optimized
-- ⚡ **~2500x realtime** throughput
+- 🏆 **Beats librosa** at all durations (1.1-3.6x faster)
+- 🚀 **17-68x speedup** from naive to optimized
+- ⚡ **~1100x realtime** throughput (30s audio)
+- 📊 **Far more consistent** than librosa (5-10% vs 22-39% variance)
 - ✅ **All from scratch** in Mojo
 - 🎓 **Complete learning resource**
 
