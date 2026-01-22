@@ -23,3 +23,8 @@ test_*
 REVISED_*.md
 SOLUTION_*.md
 FIX_*.md
+
+# Release artifacts (binaries)
+release/*/linux-x86_64/
+release/*/*.tar.gz
+*.so
