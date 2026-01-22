@@ -26,7 +26,7 @@ RESULT: 20-40% FASTER THAN PYTHON! 🔥
 - Optimized: 12ms (with -O3 compiler flags)
 - **Total speedup: 40x!**
 
-[See complete optimization journey →](docs/COMPLETE_VICTORY.md)
+[See complete optimization journey →](docs/context/01-08-2026-complete-victory.md)
 
 ---
 
@@ -309,7 +309,7 @@ var mel = mel_spectrogram(audio, n_mels=128)
 
 ## 📚 **Documentation**
 
-- **[COMPLETE_VICTORY.md](docs/COMPLETE_VICTORY.md)** - How we beat Python (full story!)
+- **[Complete Victory](docs/context/01-08-2026-complete-victory.md)** - How we beat Python (full story!)
 - **[Benchmark Results](benchmarks/RESULTS_2025-12-31.md)** - Timestamped performance data
 - **[Examples](examples/)** - Educational demos with explanations
 
@@ -320,7 +320,10 @@ var mel = mel_spectrogram(audio, n_mels=128)
 ```
 mojo-audio/
 ├── src/
-│   └── audio.mojo              # Core library (1,200+ lines)
+│   ├── audio.mojo              # Core library (3,800+ lines)
+│   └── ffi/                    # FFI bindings for C/Rust/Python
+├── include/
+│   └── mojo_audio.h            # C header for FFI
 ├── tests/
 │   ├── test_window.mojo        # Window function tests
 │   ├── test_fft.mojo           # FFT operation tests
@@ -328,13 +331,20 @@ mojo-audio/
 ├── examples/
 │   ├── window_demo.mojo
 │   ├── fft_demo.mojo
-│   └── mel_demo.mojo
+│   ├── mel_demo.mojo
+│   └── ffi/                    # FFI usage examples (C, Rust)
 ├── benchmarks/
 │   ├── bench_mel_spectrogram.mojo  # Mojo benchmarks
 │   ├── compare_librosa.py          # Python baseline
-│   └── RESULTS_2025-12-31.md       # Historical data
+│   └── bench_stable.py             # Multi-run stable benchmark
+├── ui/                         # Web benchmark UI
+│   ├── backend/                # FastAPI server
+│   └── frontend/               # HTML/CSS/JS interface
 ├── docs/
-│   └── COMPLETE_VICTORY.md     # Optimization story
+│   ├── context/                # Architecture, static reference
+│   ├── guides/                 # User documentation, FFI guide
+│   ├── research/               # Technical explorations
+│   └── project/                # Planning, optimization roadmap
 └── pixi.toml                   # Dependencies & tasks
 ```
 
