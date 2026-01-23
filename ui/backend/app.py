@@ -40,6 +40,8 @@ class BenchmarkConfig(BaseModel):
     hop_length: int = 160
     n_mels: int = 80
     iterations: int = 20  # Increased to 20 for excellent statistical confidence
+    # BLAS backend for librosa/scipy - does NOT affect mojo-audio (pure Mojo FFT)
+    blas_backend: str = "mkl"  # "mkl" or "openblas"
 
 
 class BenchmarkResult(BaseModel):
@@ -66,6 +68,7 @@ async def benchmark_mojo(config: BenchmarkConfig) -> BenchmarkResult:
     Run mojo-audio benchmark.
 
     Returns performance metrics for the optimized Mojo implementation.
+    Note: mojo-audio uses pure Mojo FFT - BLAS backend setting is ignored.
     """
     try:
         # Use simple wrapper script with ALL user parameters
@@ -116,16 +119,29 @@ async def benchmark_mojo(config: BenchmarkConfig) -> BenchmarkResult:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+ALLOWED_BLAS_BACKENDS = frozenset(["mkl", "openblas"])
+
 @app.post("/api/benchmark/librosa")
 async def benchmark_librosa(config: BenchmarkConfig) -> BenchmarkResult:
     """
     Run librosa benchmark.
 
     Returns performance metrics for Python's librosa.
+    Supports switching between MKL and OpenBLAS backends via blas_backend config.
+    Note: BLAS backend only affects librosa - mojo-audio uses pure Mojo FFT.
     """
     try:
-        # Use simple wrapper script with ALL user parameters
+        # Strict validation - reject invalid BLAS backends
+        if config.blas_backend not in ALLOWED_BLAS_BACKENDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid blas_backend: must be 'mkl' or 'openblas'"
+            )
+        blas_env = config.blas_backend
+
+        # Use pixi with specific environment for BLAS backend selection
         cmd = [
+            "pixi", "run", "-e", blas_env,
             "python", "ui/backend/run_benchmark.py",
             "librosa",
             str(config.duration),
@@ -156,8 +172,11 @@ async def benchmark_librosa(config: BenchmarkConfig) -> BenchmarkResult:
         std_time = float(parts[1]) if len(parts) > 1 else 0.0
         throughput = config.duration / (avg_time / 1000.0)
 
+        # Include BLAS backend in implementation name for clarity
+        impl_name = f"librosa ({blas_env.upper()})"
+
         return BenchmarkResult(
-            implementation="librosa",
+            implementation=impl_name,
             duration=config.duration,
             avg_time_ms=avg_time,
             std_time_ms=std_time,

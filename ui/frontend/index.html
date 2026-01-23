@@ -66,6 +66,17 @@
                     </div>
                 </div>
 
+                <div class="divider"></div>
+
+                <!-- BLAS Backend -->
+                <div class="config-group">
+                    <label class="config-label">BLAS</label>
+                    <div class="toggle-group">
+                        <button class="toggle-btn active" onclick="selectBLAS('mkl', this)" id="blasMKL">MKL</button>
+                        <button class="toggle-btn" onclick="selectBLAS('openblas', this)" id="blasOpenBLAS">OpenBLAS</button>
+                    </div>
+                </div>
+
                 <button class="primary-button" onclick="runBenchmark()" id="runBtn">
                     <span>>_</span>
                     <span>Run Benchmark</span>

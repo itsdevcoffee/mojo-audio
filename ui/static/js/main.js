@@ -9,6 +9,7 @@ const SAMPLE_RATE = 16000;
 // UI State
 let selectedDuration = 30;
 let selectedFFT = 400;
+let selectedBLAS = 'mkl';
 let benchmarkResults = null;
 let optimizationChart = null;
 
@@ -25,6 +26,16 @@ function selectDuration(duration, btn) {
 
 function selectFFT(size, btn) {
     selectedFFT = size;
+    document.querySelectorAll('.toggle-group .toggle-btn').forEach(b => {
+        if (b.parentElement === btn.parentElement) {
+            b.classList.remove('active');
+        }
+    });
+    btn.classList.add('active');
+}
+
+function selectBLAS(backend, btn) {
+    selectedBLAS = backend;
     document.querySelectorAll('.toggle-group .toggle-btn').forEach(b => {
         if (b.parentElement === btn.parentElement) {
             b.classList.remove('active');
@@ -97,7 +108,8 @@ async function runBenchmark() {
         n_fft: selectedFFT,
         hop_length: HOP_LENGTH,
         n_mels: 80,
-        iterations: parseInt(document.getElementById('runs').value)
+        iterations: parseInt(document.getElementById('runs').value),
+        blas_backend: selectedBLAS
     };
 
     // Show loading
@@ -183,6 +195,12 @@ function displayResults(results, config) {
         librosaBadge.style.display = 'inline-block';
         librosaBadge.style.background = 'linear-gradient(135deg, #3b82f6, #2563eb)';
         librosaBadge.style.boxShadow = '0 0 15px rgba(59, 130, 246, 0.3)';
+    }
+
+    // Update librosa card to show BLAS backend
+    const librosaName = document.querySelector('#librosaCard .result-name');
+    if (librosaName) {
+        librosaName.textContent = results.librosa.implementation || 'librosa';
     }
 
     // Results with std dev
@@ -351,7 +369,8 @@ function downloadResults() {
             fft_size: selectedFFT,
             hop_length: HOP_LENGTH,
             n_mels: 80,
-            iterations: parseInt(document.getElementById('runs').value)
+            iterations: parseInt(document.getElementById('runs').value),
+            blas_backend: selectedBLAS
         },
         results: benchmarkResults,
         frames_processed: calculateFrames(selectedDuration, selectedFFT)
