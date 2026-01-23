@@ -4,17 +4,19 @@ FastAPI backend for mojo-audio benchmark UI.
 Provides endpoints for running Mojo and librosa benchmarks.
 """
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
 import subprocess
 from pathlib import Path
 
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
 app = FastAPI(title="mojo-audio Benchmark API")
 
-# CORS for local development
+# CORS for local development only
+# WARNING: For production, restrict allow_origins to specific domains
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,20 +28,22 @@ app.add_middleware(
 # Configuration
 REPO_ROOT = Path(__file__).parent.parent.parent
 UI_ROOT = Path(__file__).parent.parent
+ALLOWED_BLAS_BACKENDS = frozenset(["mkl", "openblas"])
+BENCHMARK_TIMEOUT_SECONDS = 120
 
 # Serve static files (relative to ui directory)
 app.mount("/static", StaticFiles(directory=str(UI_ROOT / "static")), name="static")
 
 
 class BenchmarkConfig(BaseModel):
-    """Benchmark configuration."""
-    duration: int = 30  # seconds
-    n_fft: int = 400
-    hop_length: int = 160
-    n_mels: int = 80
-    iterations: int = 20  # Increased to 20 for excellent statistical confidence
+    """Benchmark configuration with validated parameter ranges."""
+    duration: int = Field(default=30, ge=1, le=300, description="Audio duration in seconds")
+    n_fft: int = Field(default=400, ge=64, le=8192, description="FFT window size")
+    hop_length: int = Field(default=160, ge=1, le=4096, description="Hop length between frames")
+    n_mels: int = Field(default=80, ge=1, le=256, description="Number of mel bands")
+    iterations: int = Field(default=20, ge=1, le=100, description="Benchmark iterations")
     # BLAS backend for librosa/scipy - does NOT affect mojo-audio (pure Mojo FFT)
-    blas_backend: str = "mkl"  # "mkl" or "openblas"
+    blas_backend: str = Field(default="mkl", pattern="^(mkl|openblas)$", description="BLAS backend")
 
 
 class BenchmarkResult(BaseModel):
@@ -61,11 +65,35 @@ async def root():
 
 
 def parse_benchmark_output(stdout: str) -> tuple[float, float]:
-    """Parse benchmark output in avg,std format. Returns (avg_time, std_time)."""
+    """Parse benchmark output in avg,std format. Returns (avg_time_ms, std_time_ms)."""
     parts = stdout.strip().split(',')
     avg_time = float(parts[0])
     std_time = float(parts[1]) if len(parts) > 1 else 0.0
     return avg_time, std_time
+
+
+def calculate_throughput(duration_seconds: int, avg_time_ms: float) -> float:
+    """Calculate realtime throughput ratio (how many times faster than realtime)."""
+    return duration_seconds / (avg_time_ms / 1000.0)
+
+
+def run_benchmark_subprocess(cmd: list[str], error_prefix: str) -> str:
+    """Run a benchmark subprocess and return stdout on success."""
+    result = subprocess.run(
+        cmd,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=BENCHMARK_TIMEOUT_SECONDS
+    )
+
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"{error_prefix}: {result.stderr}"
+        )
+
+    return result.stdout
 
 
 @app.post("/api/benchmark/mojo")
@@ -77,7 +105,6 @@ async def benchmark_mojo(config: BenchmarkConfig) -> BenchmarkResult:
     Note: mojo-audio uses pure Mojo FFT - BLAS backend setting is ignored.
     """
     try:
-        # Use simple wrapper script with ALL user parameters
         cmd = [
             "python", "ui/backend/run_benchmark.py",
             "mojo",
@@ -88,40 +115,26 @@ async def benchmark_mojo(config: BenchmarkConfig) -> BenchmarkResult:
             str(config.n_mels)
         ]
 
-        result = subprocess.run(
-            cmd,
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
-
-        if result.returncode != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Mojo benchmark failed: {result.stderr}"
-            )
-
-        avg_time, std_time = parse_benchmark_output(result.stdout)
-        throughput = config.duration / (avg_time / 1000.0)
+        stdout = run_benchmark_subprocess(cmd, "Mojo benchmark failed")
+        avg_time, std_time = parse_benchmark_output(stdout)
 
         return BenchmarkResult(
             implementation="mojo-audio",
             duration=config.duration,
             avg_time_ms=avg_time,
             std_time_ms=std_time,
-            throughput_realtime=throughput,
+            throughput_realtime=calculate_throughput(config.duration, avg_time),
             iterations=config.iterations,
             success=True
         )
 
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=408, detail="Benchmark timeout")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-ALLOWED_BLAS_BACKENDS = frozenset(["mkl", "openblas"])
 
 @app.post("/api/benchmark/librosa")
 async def benchmark_librosa(config: BenchmarkConfig) -> BenchmarkResult:
@@ -150,35 +163,23 @@ async def benchmark_librosa(config: BenchmarkConfig) -> BenchmarkResult:
             str(config.n_mels)
         ]
 
-        result = subprocess.run(
-            cmd,
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
-
-        if result.returncode != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=f"librosa benchmark failed: {result.stderr}"
-            )
-
-        avg_time, std_time = parse_benchmark_output(result.stdout)
-        throughput = config.duration / (avg_time / 1000.0)
+        stdout = run_benchmark_subprocess(cmd, "librosa benchmark failed")
+        avg_time, std_time = parse_benchmark_output(stdout)
 
         return BenchmarkResult(
             implementation=f"librosa ({config.blas_backend.upper()})",
             duration=config.duration,
             avg_time_ms=avg_time,
             std_time_ms=std_time,
-            throughput_realtime=throughput,
+            throughput_realtime=calculate_throughput(config.duration, avg_time),
             iterations=config.iterations,
             success=True
         )
 
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=408, detail="Benchmark timeout")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

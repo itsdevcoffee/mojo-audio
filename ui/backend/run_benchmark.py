@@ -4,21 +4,33 @@ Simple wrapper to run mojo/librosa benchmarks with specific parameters.
 This is called by the FastAPI backend with user-selected configuration.
 """
 
+import subprocess
 import sys
-import numpy as np
+import tempfile
 import time
+from pathlib import Path
 
-def benchmark_mojo_single(duration_s: int, iterations: int = 20, n_fft: int = 400, hop_length: int = 160, n_mels: int = 80):
+import numpy as np
+
+REPO_ROOT = Path(__file__).parent.parent.parent
+SAMPLE_RATE = 16000
+RANDOM_SEED = 42
+
+def benchmark_mojo_single(
+    duration_s: int,
+    iterations: int = 20,
+    n_fft: int = 400,
+    hop_length: int = 160,
+    n_mels: int = 80
+) -> tuple[float | None, float | None]:
     """
     Run mojo mel_spectrogram benchmark for specific duration and parameters.
 
-    Uses random seed=42 for reproducibility (same as librosa).
-
-    Returns: (average time in ms, std dev in ms)
+    Uses random seed for reproducibility (same as librosa).
+    Returns: (average time in ms, std dev in ms) or (None, None) on failure.
     """
-    import subprocess
+    num_samples = duration_s * SAMPLE_RATE
 
-    # Create simple Mojo script that benchmarks with specified parameters
     mojo_code = f"""
 from audio import mel_spectrogram
 from time import perf_counter_ns
@@ -26,24 +38,22 @@ from random import seed, random_float64
 from math import sqrt
 
 fn main() raises:
-    # Generate random audio with FIXED SEED (same data as librosa!)
-    seed(42)  # Reproducible random data
+    seed({RANDOM_SEED})
     var audio = List[Float32]()
-    for _ in range({duration_s * 16000}):
+    for _ in range({num_samples}):
         audio.append(Float32(random_float64(0.0, 0.1)))
 
-    # Warmup with specified parameters
+    # Warmup
     _ = mel_spectrogram(audio, n_fft={n_fft}, hop_length={hop_length}, n_mels={n_mels})
 
-    # Benchmark with specified parameters - collect per-iteration times
+    # Benchmark - collect per-iteration times
     var times = List[Float64]()
     for _ in range({iterations}):
         var iter_start = perf_counter_ns()
         var result = mel_spectrogram(audio, n_fft={n_fft}, hop_length={hop_length}, n_mels={n_mels})
         var iter_end = perf_counter_ns()
         times.append(Float64(iter_end - iter_start) / 1_000_000.0)
-
-        # Use result to prevent dead code elimination
+        # Prevent dead code elimination
         var checksum = result[0][0]
 
     # Calculate mean
@@ -59,45 +69,55 @@ fn main() raises:
         sum_sq_diff += diff * diff
     var std_ms = sqrt(sum_sq_diff / Float64(len(times)))
 
-    # Output: avg,std
     print(String(avg_ms) + "," + String(std_ms))
 """
 
-    # Write temp file
-    with open('/tmp/mojo_bench_temp.mojo', 'w') as f:
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.mojo', delete=False) as f:
+        temp_path = Path(f.name)
         f.write(mojo_code)
 
-    # Run with -O3 using pixi (ensures environment is set correctly)
-    # The -- separator ensures -O3 is passed to mojo, not pixi
-    result = subprocess.run(
-        ['pixi', 'run', '--', 'mojo', '-O3', '-I', 'src', '/tmp/mojo_bench_temp.mojo'],
-        capture_output=True,
-        text=True,
-        cwd='/home/maskkiller/dev-coffee/repos/mojo-audio'
-    )
-
-    if result.returncode != 0:
-        print(f"Error: {result.stderr}", file=sys.stderr)
-        return None, None
-
-    # Parse output (avg,std format)
     try:
-        line = result.stdout.strip().split('\n')[-1]
+        result = subprocess.run(
+            ['pixi', 'run', '--', 'mojo', '-O3', '-I', 'src', str(temp_path)],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT
+        )
+
+        if result.returncode != 0:
+            print(f"Error: {result.stderr}", file=sys.stderr)
+            return None, None
+
+        return parse_benchmark_output(result.stdout)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def parse_benchmark_output(stdout: str) -> tuple[float | None, float | None]:
+    """Parse benchmark output in avg,std format from last line of stdout."""
+    try:
+        line = stdout.strip().split('\n')[-1]
         parts = line.split(',')
         avg = float(parts[0])
         std = float(parts[1]) if len(parts) > 1 else 0.0
         return avg, std
-    except:
+    except (ValueError, IndexError):
         return None, None
 
 
-def benchmark_librosa_single(duration_s: int, iterations: int = 20, n_fft: int = 400, hop_length: int = 160, n_mels: int = 80):
+def benchmark_librosa_single(
+    duration_s: int,
+    iterations: int = 20,
+    n_fft: int = 400,
+    hop_length: int = 160,
+    n_mels: int = 80
+) -> tuple[float | None, float | None]:
     """
     Run librosa mel_spectrogram benchmark for specific duration and parameters.
 
-    Uses random seed=42 for reproducibility (same as mojo).
-
-    Returns: (average time in ms, std dev in ms)
+    Uses random seed for reproducibility (same as mojo).
+    Returns: (average time in ms, std dev in ms) or (None, None) on failure.
     """
     try:
         import librosa
@@ -105,56 +125,64 @@ def benchmark_librosa_single(duration_s: int, iterations: int = 20, n_fft: int =
         print("librosa not available", file=sys.stderr)
         return None, None
 
-    # Create test audio with FIXED SEED (same data as mojo!)
-    sr = 16000
-    np.random.seed(42)  # Reproducible random data
-    audio = np.random.rand(duration_s * sr).astype(np.float32) * 0.1
+    np.random.seed(RANDOM_SEED)
+    audio = np.random.rand(duration_s * SAMPLE_RATE).astype(np.float32) * 0.1
 
-    # Use specified parameters
-    # (n_fft, hop_length, n_mels passed as arguments)
-
-    # Warmup with specified parameters
+    # Warmup
     _ = librosa.feature.melspectrogram(
-        y=audio, sr=sr, n_fft=n_fft,
+        y=audio, sr=SAMPLE_RATE, n_fft=n_fft,
         hop_length=hop_length, n_mels=n_mels
     )
 
-    # Benchmark with specified parameters
+    # Benchmark
     times = []
     for _ in range(iterations):
         start = time.perf_counter()
         _ = librosa.feature.melspectrogram(
-            y=audio, sr=sr, n_fft=n_fft,
+            y=audio, sr=SAMPLE_RATE, n_fft=n_fft,
             hop_length=hop_length, n_mels=n_mels
         )
-        end = time.perf_counter()
-        times.append((end - start) * 1000)  # Convert to ms
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        times.append(elapsed_ms)
 
-    return np.mean(times), np.std(times)
+    return float(np.mean(times)), float(np.std(times))
+
+
+def get_arg(index: int, default: int) -> int:
+    """Get command line argument at index, or return default."""
+    return int(sys.argv[index]) if len(sys.argv) > index else default
+
+
+def main() -> int:
+    """Run benchmark based on command line arguments. Returns exit code."""
+    if len(sys.argv) < 3:
+        print("Usage: run_benchmark.py <implementation> <duration> [iterations] [n_fft] [hop_length] [n_mels]")
+        return 1
+
+    implementation = sys.argv[1]
+    duration = int(sys.argv[2])
+    iterations = get_arg(3, 3)
+    n_fft = get_arg(4, 400)
+    hop_length = get_arg(5, 160)
+    n_mels = get_arg(6, 80)
+
+    benchmark_fn = {
+        "mojo": benchmark_mojo_single,
+        "librosa": benchmark_librosa_single
+    }.get(implementation)
+
+    if benchmark_fn is None:
+        print(f"Unknown implementation: {implementation}", file=sys.stderr)
+        return 1
+
+    avg, std = benchmark_fn(duration, iterations, n_fft, hop_length, n_mels)
+
+    if avg is None:
+        return 1
+
+    print(f"{avg:.3f},{std:.3f}")
+    return 0
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: run_benchmark.py <implementation> <duration> [iterations] [n_fft] [hop_length] [n_mels]")
-        sys.exit(1)
-
-    implementation = sys.argv[1]  # "mojo" or "librosa"
-    duration = int(sys.argv[2])
-    iterations = int(sys.argv[3]) if len(sys.argv) > 3 else 3
-    n_fft = int(sys.argv[4]) if len(sys.argv) > 4 else 400
-    hop_length = int(sys.argv[5]) if len(sys.argv) > 5 else 160
-    n_mels = int(sys.argv[6]) if len(sys.argv) > 6 else 80
-
-    if implementation == "mojo":
-        avg, std = benchmark_mojo_single(duration, iterations, n_fft, hop_length, n_mels)
-    elif implementation == "librosa":
-        avg, std = benchmark_librosa_single(duration, iterations, n_fft, hop_length, n_mels)
-    else:
-        print(f"Unknown implementation: {implementation}", file=sys.stderr)
-        sys.exit(1)
-
-    if avg is not None:
-        # Output: avg,std
-        print(f"{avg:.3f},{std:.3f}")
-    else:
-        sys.exit(1)
+    sys.exit(main())
