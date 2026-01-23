@@ -10,8 +10,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import subprocess
-import json
-import time
 from pathlib import Path
 
 app = FastAPI(title="mojo-audio Benchmark API")
@@ -62,6 +60,14 @@ async def root():
     return FileResponse(str(UI_ROOT / "frontend" / "index.html"))
 
 
+def parse_benchmark_output(stdout: str) -> tuple[float, float]:
+    """Parse benchmark output in avg,std format. Returns (avg_time, std_time)."""
+    parts = stdout.strip().split(',')
+    avg_time = float(parts[0])
+    std_time = float(parts[1]) if len(parts) > 1 else 0.0
+    return avg_time, std_time
+
+
 @app.post("/api/benchmark/mojo")
 async def benchmark_mojo(config: BenchmarkConfig) -> BenchmarkResult:
     """
@@ -96,11 +102,7 @@ async def benchmark_mojo(config: BenchmarkConfig) -> BenchmarkResult:
                 detail=f"Mojo benchmark failed: {result.stderr}"
             )
 
-        # Parse output (avg,std format)
-        output = result.stdout.strip()
-        parts = output.split(',')
-        avg_time = float(parts[0])
-        std_time = float(parts[1]) if len(parts) > 1 else 0.0
+        avg_time, std_time = parse_benchmark_output(result.stdout)
         throughput = config.duration / (avg_time / 1000.0)
 
         return BenchmarkResult(
@@ -131,17 +133,14 @@ async def benchmark_librosa(config: BenchmarkConfig) -> BenchmarkResult:
     Note: BLAS backend only affects librosa - mojo-audio uses pure Mojo FFT.
     """
     try:
-        # Strict validation - reject invalid BLAS backends
         if config.blas_backend not in ALLOWED_BLAS_BACKENDS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid blas_backend: must be 'mkl' or 'openblas'"
+                detail="Invalid blas_backend: must be 'mkl' or 'openblas'"
             )
-        blas_env = config.blas_backend
 
-        # Use pixi with specific environment for BLAS backend selection
         cmd = [
-            "pixi", "run", "-e", blas_env,
+            "pixi", "run", "-e", config.blas_backend,
             "python", "ui/backend/run_benchmark.py",
             "librosa",
             str(config.duration),
@@ -165,18 +164,11 @@ async def benchmark_librosa(config: BenchmarkConfig) -> BenchmarkResult:
                 detail=f"librosa benchmark failed: {result.stderr}"
             )
 
-        # Parse output (avg,std format)
-        output = result.stdout.strip()
-        parts = output.split(',')
-        avg_time = float(parts[0])
-        std_time = float(parts[1]) if len(parts) > 1 else 0.0
+        avg_time, std_time = parse_benchmark_output(result.stdout)
         throughput = config.duration / (avg_time / 1000.0)
 
-        # Include BLAS backend in implementation name for clarity
-        impl_name = f"librosa ({blas_env.upper()})"
-
         return BenchmarkResult(
-            implementation=impl_name,
+            implementation=f"librosa ({config.blas_backend.upper()})",
             duration=config.duration,
             avg_time_ms=avg_time,
             std_time_ms=std_time,

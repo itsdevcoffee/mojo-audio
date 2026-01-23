@@ -13,36 +13,20 @@ let selectedBLAS = 'mkl';
 let benchmarkResults = null;
 let optimizationChart = null;
 
-// Toggle Functions
-function selectDuration(duration, btn) {
-    selectedDuration = duration;
-    document.querySelectorAll('.toggle-group .toggle-btn').forEach(b => {
-        if (b.parentElement === btn.parentElement) {
-            b.classList.remove('active');
-        }
-    });
+// Generic toggle selection - updates state and active button styling
+function selectToggle(stateKey, value, btn) {
+    if (stateKey === 'duration') selectedDuration = value;
+    else if (stateKey === 'fft') selectedFFT = value;
+    else if (stateKey === 'blas') selectedBLAS = value;
+
+    btn.parentElement.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
 }
 
-function selectFFT(size, btn) {
-    selectedFFT = size;
-    document.querySelectorAll('.toggle-group .toggle-btn').forEach(b => {
-        if (b.parentElement === btn.parentElement) {
-            b.classList.remove('active');
-        }
-    });
-    btn.classList.add('active');
-}
-
-function selectBLAS(backend, btn) {
-    selectedBLAS = backend;
-    document.querySelectorAll('.toggle-group .toggle-btn').forEach(b => {
-        if (b.parentElement === btn.parentElement) {
-            b.classList.remove('active');
-        }
-    });
-    btn.classList.add('active');
-}
+// Convenience wrappers for HTML onclick handlers
+function selectDuration(duration, btn) { selectToggle('duration', duration, btn); }
+function selectFFT(size, btn) { selectToggle('fft', size, btn); }
+function selectBLAS(backend, btn) { selectToggle('blas', backend, btn); }
 
 function incrementRuns() {
     const input = document.getElementById('runs');
