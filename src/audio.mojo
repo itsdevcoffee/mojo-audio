@@ -278,14 +278,14 @@ struct Radix4TwiddleCache(Movable):
     - stage_offsets[s] gives starting index for stage s
     """
     # Twiddle data: W^k factors (64-byte aligned for SIMD)
-    var w1_real: UnsafePointer[Float32, MutOrigin.external]
-    var w1_imag: UnsafePointer[Float32, MutOrigin.external]
+    var w1_real: UnsafePointer[Float32, MutAnyOrigin]
+    var w1_imag: UnsafePointer[Float32, MutAnyOrigin]
     # Twiddle data: W^2k factors
-    var w2_real: UnsafePointer[Float32, MutOrigin.external]
-    var w2_imag: UnsafePointer[Float32, MutOrigin.external]
+    var w2_real: UnsafePointer[Float32, MutAnyOrigin]
+    var w2_imag: UnsafePointer[Float32, MutAnyOrigin]
     # Twiddle data: W^3k factors
-    var w3_real: UnsafePointer[Float32, MutOrigin.external]
-    var w3_imag: UnsafePointer[Float32, MutOrigin.external]
+    var w3_real: UnsafePointer[Float32, MutAnyOrigin]
+    var w3_imag: UnsafePointer[Float32, MutAnyOrigin]
     # Total size for memory management
     var total_size: Int
     # Stage metadata
@@ -2006,10 +2006,10 @@ struct SplitRadixCache(Movable):
 
     Uses 64-byte aligned memory for optimal SIMD performance.
     """
-    var twiddle_real: UnsafePointer[Float32, MutOrigin.external]
-    var twiddle_imag: UnsafePointer[Float32, MutOrigin.external]
-    var twiddle3_real: UnsafePointer[Float32, MutOrigin.external]  # W^3k twiddles
-    var twiddle3_imag: UnsafePointer[Float32, MutOrigin.external]
+    var twiddle_real: UnsafePointer[Float32, MutAnyOrigin]
+    var twiddle_imag: UnsafePointer[Float32, MutAnyOrigin]
+    var twiddle3_real: UnsafePointer[Float32, MutAnyOrigin]  # W^3k twiddles
+    var twiddle3_imag: UnsafePointer[Float32, MutAnyOrigin]
     var N: Int
     var log2_N: Int
 
@@ -2427,8 +2427,8 @@ struct FourStepCache(Movable):
     Stores twiddle factors for the middle multiplication step plus
     radix-4 caches for the N1 and N2 sized sub-FFTs.
     """
-    var twiddle_real: UnsafePointer[Float32, MutOrigin.external]
-    var twiddle_imag: UnsafePointer[Float32, MutOrigin.external]
+    var twiddle_real: UnsafePointer[Float32, MutAnyOrigin]
+    var twiddle_imag: UnsafePointer[Float32, MutAnyOrigin]
     var r4_cache_n1: Radix4TwiddleCache  # For N1-point sub-FFTs
     var r4_cache_n2: Radix4TwiddleCache  # For N2-point sub-FFTs
     var N: Int
@@ -2492,10 +2492,10 @@ struct FourStepCache(Movable):
 
 
 fn transpose_complex(
-    src_real: UnsafePointer[Float32, MutOrigin.external],
-    src_imag: UnsafePointer[Float32, MutOrigin.external],
-    dst_real: UnsafePointer[Float32, MutOrigin.external],
-    dst_imag: UnsafePointer[Float32, MutOrigin.external],
+    src_real: UnsafePointer[Float32, MutAnyOrigin],
+    src_imag: UnsafePointer[Float32, MutAnyOrigin],
+    dst_real: UnsafePointer[Float32, MutAnyOrigin],
+    dst_imag: UnsafePointer[Float32, MutAnyOrigin],
     rows: Int,
     cols: Int
 ):

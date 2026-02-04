@@ -1,8 +1,10 @@
-# Mojo 0.26.1 FFI Constraints - Battle-Tested Rules
+# Mojo 0.26.2+ FFI Constraints - Battle-Tested Rules
 
-**Version:** Mojo 0.26.1.0.dev2026010718 (Nightly build from Jan 7, 2026)
+**Version:** Mojo 0.26.2.0.dev2026020405 (Updated Feb 4, 2026)
 
 **Status:** Production-validated through extensive debugging and testing
+
+**Updates:** API changes for Origin syntax in Mojo 0.26.2+
 
 ---
 
@@ -88,8 +90,8 @@ fn _ptr_to_handle[T: AnyType](ptr: UnsafePointer[T]) -> Int64:
     return Int64(Int(ptr))
 
 @always_inline
-fn _handle_to_ptr(handle: Int64) -> UnsafePointer[mut=True, Type, MutOrigin.external]:
-    return UnsafePointer[mut=True, Type, MutOrigin.external](
+fn _handle_to_ptr(handle: Int64) -> UnsafePointer[mut=True, Type, MutAnyOrigin]:
+    return UnsafePointer[mut=True, Type, MutAnyOrigin](
         unsafe_from_address=Int(handle)
     )
 ```
@@ -106,19 +108,22 @@ typedef int64_t MojoMelHandle;  // NOT int32_t! (truncates 64-bit pointers)
 ### 5. ✅ MUST Specify Origin Parameters Explicitly
 
 ```mojo
-# UnsafePointer v2 syntax (Mojo 0.26+):
+# UnsafePointer v2 syntax (Mojo 0.26.2+):
 UnsafePointer[mut=True, Type, MutAnyOrigin]        # For C input params (mutable)
 UnsafePointer[mut=False, Type, ImmutAnyOrigin]     # For C input params (immutable)
-UnsafePointer[mut=True, Type, MutOrigin.external]  # For heap-allocated returns
-UnsafePointer[mut=False, Type, ImmutOrigin.external]  # For string literals/constants
+UnsafePointer[mut=True, Type, MutAnyOrigin]        # For heap-allocated returns (mutable)
+UnsafePointer[mut=False, Type, ImmutExternalOrigin]  # For string literals/constants
 ```
 
-**Origins are built-in comptime values** - no import needed
+**API Changes in 0.26.2:**
+- `MutOrigin.external` → `MutAnyOrigin` (for all mutable pointers)
+- `ImmutOrigin.external` → `ImmutExternalOrigin` (for immutable external data)
+- Origins are built-in comptime values - no import needed
 
 **Constructor syntax:**
 ```mojo
 # Use keyword argument for unsafe_from_address:
-var ptr = UnsafePointer[mut=True, Int32, MutOrigin.external](
+var ptr = UnsafePointer[mut=True, Int32, MutAnyOrigin](
     unsafe_from_address=address_value
 )
 ```

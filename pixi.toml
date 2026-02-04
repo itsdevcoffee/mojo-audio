@@ -2,7 +2,7 @@
 authors = ["itsdevcoffee <itstexmex@gmail.com>"]
 channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
 name = "mojo-audio"
-platforms = ["linux-64"]
+platforms = ["linux-64", "osx-arm64"]
 version = "0.1.1"
 description = "High-performance audio DSP library in Mojo - beats Python!"
 
@@ -67,14 +67,14 @@ pydantic = ">=2.5.3"
 python-multipart = ">=0.0.6"
 
 # BLAS backend features - allows switching between MKL and OpenBLAS
-# Note: MKL is Linux-only, macOS builds use OpenBLAS (configured in CI)
-[feature.mkl.dependencies]
+# Note: MKL is Linux-only, macOS uses OpenBLAS automatically
+[feature.mkl.target.linux-64.dependencies]
 libblas = { version = "*", build = "*mkl" }
 
 [feature.openblas.dependencies]
 libblas = { version = "*", build = "*openblas" }
 
 [environments]
-default = { features = ["mkl"], solve-group = "default" }
-mkl = { features = ["mkl"], solve-group = "default" }
-openblas = { features = ["openblas"], solve-group = "openblas" }
+default = { features = ["openblas"], solve-group = "default" }
+mkl = { features = ["mkl"], solve-group = "mkl" }
+openblas = { features = ["openblas"], solve-group = "default" }
