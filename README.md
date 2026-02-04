@@ -8,6 +8,10 @@
 
 Whisper-compatible mel spectrogram preprocessing built from scratch in Mojo. **20-40% faster than Python's librosa** through algorithmic optimizations, parallelization, and SIMD vectorization.
 
+<div align="center">
+  <img src="docs/assets/mojo-audio-blog-4.png" alt="Performance Comparison" width="700"/>
+</div>
+
 ---
 
 ## 🏆 **Performance**
@@ -25,6 +29,10 @@ RESULT: 20-40% FASTER THAN PYTHON! 🔥
 - Started: 476ms (naive implementation)
 - Optimized: 12ms (with -O3 compiler flags)
 - **Total speedup: 40x!**
+
+<div align="center">
+  <img src="docs/assets/mojo-audio-diagram-5.jpeg" alt="24x Optimization Journey" width="800"/>
+</div>
 
 [See complete optimization journey →](docs/COMPLETE_VICTORY.md)
 
