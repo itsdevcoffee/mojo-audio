@@ -30,7 +30,7 @@ function selectBLAS(backend, btn) { selectToggle('blas', backend, btn); }
 
 function incrementRuns() {
     const input = document.getElementById('runs');
-    input.value = Math.min(parseInt(input.value) + 1, 30);
+    input.value = Math.min(parseInt(input.value) + 1, 100);
 }
 
 function decrementRuns() {
@@ -101,17 +101,24 @@ async function runBenchmark() {
     document.getElementById('runBtn').disabled = true;
 
     try {
-        const response = await fetch(`${API_BASE}/benchmark/both`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(config)
+        // Use unified API (auto-detects demo vs server mode)
+        const results = await window.BenchmarkAPI.run(config, {
+            onProgress: (progress) => {
+                // Update loading overlay with progress
+                const loadingText = document.querySelector('.loading-text');
+                const loadingSubtext = document.querySelector('.loading-subtext');
+
+                if (progress.message) {
+                    loadingText.textContent = progress.message;
+                }
+
+                if (progress.progress !== undefined) {
+                    const percent = Math.round(progress.progress * 100);
+                    loadingSubtext.textContent = `${percent}% complete`;
+                }
+            }
         });
 
-        if (!response.ok) {
-            throw new Error('Benchmark failed');
-        }
-
-        const results = await response.json();
         benchmarkResults = results;
 
         // Save to history

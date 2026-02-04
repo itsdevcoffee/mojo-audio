@@ -61,7 +61,7 @@
                     <label class="config-label">Runs</label>
                     <div class="number-input">
                         <button class="number-btn" onclick="decrementRuns()">−</button>
-                        <input type="number" id="runs" value="20" min="1" max="30" readonly>
+                        <input type="number" id="runs" value="20" min="1" max="100" readonly>
                         <button class="number-btn" onclick="incrementRuns()">+</button>
                     </div>
                 </div>
@@ -189,6 +189,57 @@
         </div>
     </div>
 
+    <!-- Benchmark System: Config → Demo → API → Main -->
+    <script src="../static/js/config.js"></script>
+    <script src="../static/js/demo-mode.js"></script>
+    <script src="../static/js/benchmark-api.js"></script>
     <script src="../static/js/main.js"></script>
+
+    <!-- Initialize benchmark system -->
+    <script>
+        window.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const mode = await window.BenchmarkAPI.init();
+                console.log('✅ Benchmark UI initialized in', mode, 'mode');
+
+                // Show mode indicator
+                if (mode === 'demo') {
+                    showDemoModeBanner();
+                }
+
+                updateStatusBar(mode);
+            } catch (error) {
+                console.error('❌ Initialization failed:', error);
+                alert('Failed to initialize benchmark UI. Please refresh the page.');
+            }
+        });
+
+        // Show demo mode banner
+        function showDemoModeBanner() {
+            const banner = document.createElement('div');
+            banner.className = 'demo-banner';
+            banner.innerHTML = `
+                <span class="demo-badge">🎮 Demo Mode</span>
+                <span class="demo-text">
+                    Pre-computed results with smart interpolation.
+                    <a href="https://github.com/itsdevcoffee/mojo-audio#building-from-source" target="_blank">
+                        Run locally
+                    </a> for live benchmarks.
+                </span>
+            `;
+            document.querySelector('.container').insertBefore(
+                banner,
+                document.querySelector('.header').nextSibling
+            );
+        }
+
+        // Update status bar with mode
+        function updateStatusBar(mode) {
+            const statusBar = document.querySelector('.status-bar');
+            const modeText = mode === 'demo' ? 'DEMO_MODE' : 'LIVE_MODE';
+            const firstSpan = statusBar.querySelector('span');
+            firstSpan.textContent = `• ${modeText}: ${mode.toUpperCase()}`;
+        }
+    </script>
 </body>
 </html>
