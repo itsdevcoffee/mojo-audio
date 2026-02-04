@@ -16,6 +16,7 @@ jobs:
         uses: prefix-dev/setup-pixi@v0.8.1
         with:
           pixi-version: latest
+          cache: false
 
       - name: Build FFI library
         run: pixi run build-ffi-optimized
@@ -61,16 +62,25 @@ jobs:
         include:
           - runner: macos-latest  # Apple Silicon (M1)
             arch: arm64
-          - runner: macos-13      # Intel
+            platform: osx-arm64
+          - runner: macos-12      # Intel
             arch: x86_64
+            platform: osx-64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Configure pixi for macOS
+        run: |
+          # Update pixi.toml to use macOS platform and OpenBLAS (MKL not available on macOS)
+          sed -i.bak 's/platforms = \["linux-64"\]/platforms = ["${{ matrix.platform }}"]/' pixi.toml
+          sed -i.bak 's/default = { features = \["mkl"\]/default = { features = ["openblas"]/' pixi.toml
 
       - name: Install pixi
         uses: prefix-dev/setup-pixi@v0.8.1
         with:
           pixi-version: latest
+          cache: false
 
       - name: Build FFI library
         run: pixi run build-ffi-optimized
