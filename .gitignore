@@ -16,6 +16,9 @@ docs/tmp
 test_*
 !tests/
 
+# Release artifacts (uploaded to GitHub Releases, not committed)
+release/
+
 # Prompt/handoff documents
 *HANDOFF*.md
 *PROMPT*.md
