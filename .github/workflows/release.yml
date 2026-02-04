@@ -1,0 +1,123 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:  # Allow manual trigger for testing
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pixi
+        uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: latest
+
+      - name: Build FFI library
+        run: pixi run build-ffi-optimized
+
+      - name: Package Linux release
+        run: |
+          mkdir -p release/linux-x86_64
+          cp libmojo_audio.so release/linux-x86_64/
+          cp include/mojo_audio.h release/linux-x86_64/
+          echo "# mojo-audio FFI - Linux x86_64" > release/linux-x86_64/INSTALL.md
+          echo "" >> release/linux-x86_64/INSTALL.md
+          echo "## Installation" >> release/linux-x86_64/INSTALL.md
+          echo "\`\`\`bash" >> release/linux-x86_64/INSTALL.md
+          echo "sudo cp libmojo_audio.so /usr/local/lib/" >> release/linux-x86_64/INSTALL.md
+          echo "sudo cp mojo_audio.h /usr/local/include/" >> release/linux-x86_64/INSTALL.md
+          echo "sudo ldconfig" >> release/linux-x86_64/INSTALL.md
+          echo "\`\`\`" >> release/linux-x86_64/INSTALL.md
+          tar czf mojo-audio-${{ github.ref_name }}-linux-x86_64.tar.gz -C release/linux-x86_64 .
+
+      - name: Package FFI examples
+        run: |
+          mkdir -p release/ffi-examples
+          cp examples/ffi/demo_c.c release/ffi-examples/
+          cp examples/ffi/demo_rust.rs release/ffi-examples/
+          cp examples/ffi/Makefile release/ffi-examples/
+          tar czf mojo-audio-ffi-examples.tar.gz -C release/ffi-examples .
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-build
+          path: mojo-audio-${{ github.ref_name }}-linux-x86_64.tar.gz
+
+      - name: Upload FFI examples artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffi-examples
+          path: mojo-audio-ffi-examples.tar.gz
+
+  build-macos:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest  # Apple Silicon (M1)
+            arch: arm64
+          - runner: macos-13      # Intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pixi
+        uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: latest
+
+      - name: Build FFI library
+        run: pixi run build-ffi-optimized
+
+      - name: Package macOS release
+        run: |
+          mkdir -p release/macos-${{ matrix.arch }}
+          cp libmojo_audio.dylib release/macos-${{ matrix.arch }}/
+          cp include/mojo_audio.h release/macos-${{ matrix.arch }}/
+          echo "# mojo-audio FFI - macOS ${{ matrix.arch }}" > release/macos-${{ matrix.arch }}/INSTALL.md
+          echo "" >> release/macos-${{ matrix.arch }}/INSTALL.md
+          echo "## Installation" >> release/macos-${{ matrix.arch }}/INSTALL.md
+          echo "\`\`\`bash" >> release/macos-${{ matrix.arch }}/INSTALL.md
+          echo "sudo cp libmojo_audio.dylib /usr/local/lib/" >> release/macos-${{ matrix.arch }}/INSTALL.md
+          echo "sudo cp mojo_audio.h /usr/local/include/" >> release/macos-${{ matrix.arch }}/INSTALL.md
+          echo "\`\`\`" >> release/macos-${{ matrix.arch }}/INSTALL.md
+          tar czf mojo-audio-${{ github.ref_name }}-macos-${{ matrix.arch }}.tar.gz -C release/macos-${{ matrix.arch }} .
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}-build
+          path: mojo-audio-${{ github.ref_name }}-macos-${{ matrix.arch }}.tar.gz
+
+  create-release:
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/linux-x86_64-build/*
+            artifacts/macos-arm64-build/*
+            artifacts/macos-x86_64-build/*
+            artifacts/ffi-examples/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -2,7 +2,7 @@
 authors = ["itsdevcoffee <itstexmex@gmail.com>"]
 channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
 name = "mojo-audio"
-platforms = ["linux-64"]
+platforms = ["linux-64", "osx-arm64", "osx-64"]
 version = "0.1.0"
 description = "High-performance audio DSP library in Mojo - beats Python!"
 
@@ -40,7 +40,19 @@ install-ffi = """
     cp include/mojo_audio.h $HOME/.local/include/ &&
     echo 'FFI library installed to ~/.local/lib and ~/.local/include'
 """
-clean-ffi = "rm -f libmojo_audio.so"
+clean-ffi = "rm -f libmojo_audio.so libmojo_audio.dylib"
+
+# Platform-specific FFI builds
+[target.osx.tasks]
+build-ffi = "mojo build --emit shared-lib -I src -o libmojo_audio.dylib src/ffi/audio_ffi.mojo"
+build-ffi-optimized = "mojo build --emit shared-lib -O3 -I src -o libmojo_audio.dylib src/ffi/audio_ffi.mojo"
+install-ffi = """
+    mkdir -p $HOME/.local/lib &&
+    cp libmojo_audio.dylib $HOME/.local/lib/ &&
+    mkdir -p $HOME/.local/include &&
+    cp include/mojo_audio.h $HOME/.local/include/ &&
+    echo 'FFI library installed to ~/.local/lib and ~/.local/include'
+"""
 
 [dependencies]
 max = ">=26.1.0.dev2025123105,<27"
