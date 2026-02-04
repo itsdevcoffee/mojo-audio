@@ -184,8 +184,136 @@
 
         <!-- Status Bar -->
         <div class="status-bar">
-            <span>• BENCHMARK_STATUS: READY</span>
+            <span id="modeStatus" class="mode-status">• MODE: LOADING</span>
             <span>• FFT_ENGINE: SPLIT_RADIX</span>
+        </div>
+    </div>
+
+    <!-- Demo Mode Info Modal -->
+    <div class="modal-overlay" id="demoModal" style="display: none;" onclick="closeDemoModal(event)">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span class="modal-icon">🎮</span>
+                    <h2>Demo Mode</h2>
+                </div>
+                <button class="modal-close" onclick="closeDemoModal()">&times;</button>
+            </div>
+
+            <div class="modal-body">
+                <section class="modal-section">
+                    <h3>What is Demo Mode?</h3>
+                    <p>
+                        This benchmark UI runs in <strong>demo mode</strong> using pre-computed results.
+                        All 24 configuration combinations were benchmarked on real hardware and the results
+                        are served statically for instant access.
+                    </p>
+                    <div class="info-box">
+                        <div class="info-item">
+                            <span class="info-label">Configs Generated:</span>
+                            <span class="info-value">24 (3 durations × 4 FFT sizes × 2 BLAS)</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Base Iterations:</span>
+                            <span class="info-value">20 runs per config</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Smart Features:</span>
+                            <span class="info-value">Interpolation + realistic variance</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="modal-section">
+                    <h3>How It Works</h3>
+                    <ul class="feature-list">
+                        <li>
+                            <span class="feature-icon">📊</span>
+                            <div>
+                                <strong>Pre-computed Base Data:</strong>
+                                Real benchmarks for all 24 configs (20 iterations each)
+                            </div>
+                        </li>
+                        <li>
+                            <span class="feature-icon">🧮</span>
+                            <div>
+                                <strong>Smart Interpolation:</strong>
+                                Run count (1-100) mathematically interpolated from base data
+                            </div>
+                        </li>
+                        <li>
+                            <span class="feature-icon">🎲</span>
+                            <div>
+                                <strong>Realistic Variance:</strong>
+                                ±3-5% randomness simulates real benchmark behavior
+                            </div>
+                        </li>
+                        <li>
+                            <span class="feature-icon">⏱️</span>
+                            <div>
+                                <strong>Dynamic Loading:</strong>
+                                Loading time scales with config complexity (1.5-8s)
+                            </div>
+                        </li>
+                    </ul>
+                </section>
+
+                <section class="modal-section">
+                    <h3>Benchmark Hardware</h3>
+                    <div class="hardware-grid">
+                        <div class="hw-category">
+                            <h4>CPU</h4>
+                            <p>13th Gen Intel Core i7-1360P</p>
+                            <span class="hw-detail">12 cores, 16 threads</span>
+                        </div>
+                        <div class="hw-category">
+                            <h4>GPU (Primary)</h4>
+                            <p>NVIDIA GeForce RTX 4060 Ti</p>
+                            <span class="hw-detail">Driver: 580.119.02</span>
+                        </div>
+                        <div class="hw-category">
+                            <h4>GPU (iGPU)</h4>
+                            <p>Intel Raptor Lake-P</p>
+                            <span class="hw-detail">Iris Xe Graphics</span>
+                        </div>
+                        <div class="hw-category">
+                            <h4>Operating System</h4>
+                            <p>Fedora Linux 43</p>
+                            <span class="hw-detail">Kernel 6.18.4-200.fc43.x86_64</span>
+                        </div>
+                        <div class="hw-category">
+                            <h4>Display Server</h4>
+                            <p>Hyprland 0.53.0</p>
+                            <span class="hw-detail">Wayland compositor</span>
+                        </div>
+                        <div class="hw-category">
+                            <h4>Mojo Version</h4>
+                            <p>0.26.2.0.dev2026020405</p>
+                            <span class="hw-detail">Max Nightly (Feb 4, 2026)</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="modal-section modal-cta">
+                    <h3>Want to Run Live Benchmarks?</h3>
+                    <p>
+                        Clone the repository and run benchmarks on your own hardware to see
+                        how mojo-audio performs on your system.
+                    </p>
+                    <div class="cta-buttons">
+                        <a href="https://github.com/itsdevcoffee/mojo-audio#building-from-source"
+                           target="_blank"
+                           class="cta-button primary">
+                            📥 Build from Source
+                        </a>
+                        <a href="https://github.com/itsdevcoffee/mojo-audio/releases"
+                           target="_blank"
+                           class="cta-button secondary">
+                            ⬇️ Download Release
+                        </a>
+                    </div>
+                </section>
+            </div>
         </div>
     </div>
 
@@ -202,44 +330,54 @@
                 const mode = await window.BenchmarkAPI.init();
                 console.log('✅ Benchmark UI initialized in', mode, 'mode');
 
-                // Show mode indicator
-                if (mode === 'demo') {
-                    showDemoModeBanner();
-                }
-
+                // Update status bar with mode
                 updateStatusBar(mode);
+
+                // Make mode clickable if in demo mode
+                if (mode === 'demo') {
+                    enableDemoModeClick();
+                }
             } catch (error) {
                 console.error('❌ Initialization failed:', error);
                 alert('Failed to initialize benchmark UI. Please refresh the page.');
             }
         });
 
-        // Show demo mode banner
-        function showDemoModeBanner() {
-            const banner = document.createElement('div');
-            banner.className = 'demo-banner';
-            banner.innerHTML = `
-                <span class="demo-badge">🎮 Demo Mode</span>
-                <span class="demo-text">
-                    Pre-computed results with smart interpolation.
-                    <a href="https://github.com/itsdevcoffee/mojo-audio#building-from-source" target="_blank">
-                        Run locally
-                    </a> for live benchmarks.
-                </span>
-            `;
-            document.querySelector('.container').insertBefore(
-                banner,
-                document.querySelector('.header').nextSibling
-            );
-        }
-
         // Update status bar with mode
         function updateStatusBar(mode) {
-            const statusBar = document.querySelector('.status-bar');
-            const modeText = mode === 'demo' ? 'DEMO_MODE' : 'LIVE_MODE';
-            const firstSpan = statusBar.querySelector('span');
-            firstSpan.textContent = `• ${modeText}: ${mode.toUpperCase()}`;
+            const modeStatus = document.getElementById('modeStatus');
+            const modeText = mode === 'demo' ? 'DEMO' : 'LIVE';
+            modeStatus.textContent = `• MODE: ${modeText}`;
         }
+
+        // Enable demo mode click handler
+        function enableDemoModeClick() {
+            const modeStatus = document.getElementById('modeStatus');
+            modeStatus.classList.add('clickable');
+            modeStatus.onclick = openDemoModal;
+        }
+
+        // Open demo info modal
+        function openDemoModal() {
+            document.getElementById('demoModal').style.display = 'flex';
+            document.body.style.overflow = 'hidden'; // Prevent background scroll
+        }
+
+        // Close demo info modal
+        function closeDemoModal(event) {
+            // Only close if clicking overlay or close button
+            if (!event || event.target.id === 'demoModal' || event.target.className === 'modal-close') {
+                document.getElementById('demoModal').style.display = 'none';
+                document.body.style.overflow = 'auto';
+            }
+        }
+
+        // Keyboard shortcut: ESC to close modal
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeDemoModal();
+            }
+        });
     </script>
 </body>
 </html>
