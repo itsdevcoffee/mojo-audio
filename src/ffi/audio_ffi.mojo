@@ -1033,9 +1033,9 @@ fn _ptr_to_handle[T: AnyType](ptr: UnsafePointer[T]) -> Int64:
     return Int64(Int(ptr))
 
 @always_inline
-fn _handle_to_ptr(handle: Int64) -> UnsafePointer[mut=True, MojoMelSpectrogram, MutOrigin.external]:
+fn _handle_to_ptr(handle: Int64) -> UnsafePointer[MojoMelSpectrogram, MutExternalOrigin]:
     """Convert Int64 handle back to MojoMelSpectrogram pointer."""
-    return UnsafePointer[mut=True, MojoMelSpectrogram, MutOrigin.external](
+    return UnsafePointer[MojoMelSpectrogram, MutExternalOrigin](
         unsafe_from_address=Int(handle)
     )
 
@@ -1142,9 +1142,9 @@ fn mojo_mel_spectrogram_free(handle: Int64):
     mel_ptr.free()
 
 @export("mojo_audio_last_error", ABI="C")
-fn mojo_audio_last_error() -> UnsafePointer[mut=False, UInt8, ImmutOrigin.external]:
+fn mojo_audio_last_error() -> UnsafePointer[UInt8, ImmutExternalOrigin]:
     """Get last error message (currently returns null - reserved for future use)."""
-    return UnsafePointer[mut=False, UInt8, ImmutOrigin.external](unsafe_from_address=0)
+    return UnsafePointer[UInt8, ImmutExternalOrigin](unsafe_from_address=0)
 
 @export("mojo_mel_spectrogram_get_size", ABI="C")
 fn mojo_mel_spectrogram_get_size(handle: Int64) -> UInt64:
