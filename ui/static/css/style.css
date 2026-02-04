@@ -787,6 +787,66 @@ html {
 }
 
 /* ============================================ */
+/* Custom Scrollbar - Terminal Theme           */
+/* ============================================ */
+
+/* Webkit browsers (Chrome, Safari, Edge) */
+::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+}
+
+::-webkit-scrollbar-track {
+    background: rgba(13, 17, 23, 0.8);
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg,
+        rgba(0, 255, 157, 0.3),
+        rgba(0, 255, 157, 0.2)
+    );
+    border-radius: 10px;
+    border: 2px solid rgba(13, 17, 23, 0.8);
+    transition: all 0.3s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg,
+        rgba(0, 255, 157, 0.5),
+        rgba(0, 255, 157, 0.4)
+    );
+    box-shadow: 0 0 8px rgba(0, 255, 157, 0.3);
+}
+
+::-webkit-scrollbar-thumb:active {
+    background: var(--green-primary);
+}
+
+/* Firefox */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 255, 157, 0.3) rgba(13, 17, 23, 0.8);
+}
+
+/* Modal scrollbar - slightly more visible */
+.modal-content::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg,
+        rgba(0, 255, 157, 0.4),
+        rgba(0, 255, 157, 0.3)
+    );
+}
+
+.modal-content::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg,
+        rgba(0, 255, 157, 0.6),
+        rgba(0, 255, 157, 0.5)
+    );
+    box-shadow: 0 0 12px rgba(0, 255, 157, 0.4);
+}
+
+/* ============================================ */
 /* Interactive Status Bar - Demo Mode          */
 /* ============================================ */
 
