@@ -17,6 +17,7 @@ jobs:
         with:
           pixi-version: latest
           cache: false
+          locked: false
 
       - name: Build FFI library
         run: pixi run build-ffi-optimized
@@ -81,6 +82,7 @@ jobs:
         with:
           pixi-version: latest
           cache: false
+          locked: false
 
       - name: Build FFI library
         run: pixi run build-ffi-optimized
