@@ -1,0 +1,25 @@
+{
+  "machines": {
+    "intel-i7-1360p": {
+      "name": "Intel i7-1360P",
+      "cpu": "13th Gen Intel Core i7-1360P",
+      "cores": "12 (4P+8E)",
+      "platform": "linux-x64",
+      "simd": "AVX2",
+      "blas_backends": ["mkl", "openblas"],
+      "data_file": "benchmark_results_intel-i7-1360p.json",
+      "description": "12-core x86 laptop CPU with AVX2 SIMD"
+    },
+    "nvidia-dgx-spark": {
+      "name": "NVIDIA DGX Spark",
+      "cpu": "ARM Neoverse (20-core)",
+      "cores": "20",
+      "platform": "linux-arm64",
+      "simd": "NEON",
+      "blas_backends": ["openblas"],
+      "data_file": "benchmark_results_nvidia-dgx-spark.json",
+      "description": "20-core ARM server with NEON SIMD"
+    }
+  },
+  "default": "intel-i7-1360p"
+}

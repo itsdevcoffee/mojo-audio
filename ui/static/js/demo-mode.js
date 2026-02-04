@@ -10,15 +10,36 @@
 
 // Pre-loaded benchmark data (loaded from JSON)
 let BENCHMARK_DATA = null;
+let CURRENT_MACHINE_DATA = null;
 
 /**
- * Load pre-computed benchmark data
+ * Load pre-computed benchmark data for a specific machine
  */
-async function loadBenchmarkData() {
+async function loadBenchmarkData(machineId = null) {
     try {
-        const response = await fetch('/static/data/benchmark_results.json');
-        BENCHMARK_DATA = await response.json();
-        console.log('✅ Loaded benchmark data:', Object.keys(BENCHMARK_DATA).length, 'configs');
+        // Determine which data file to load
+        let dataFile = '/static/data/benchmark_results.json';  // Default
+
+        if (machineId && window.machinesConfig) {
+            const machine = window.machinesConfig.machines[machineId];
+            if (machine && machine.data_file) {
+                dataFile = `/static/data/${machine.data_file}`;
+            }
+        }
+
+        const response = await fetch(dataFile);
+        const data = await response.json();
+
+        // Check if data has metadata wrapper
+        if (data.benchmarks) {
+            BENCHMARK_DATA = data.benchmarks;
+            CURRENT_MACHINE_DATA = data;
+        } else {
+            BENCHMARK_DATA = data;
+            CURRENT_MACHINE_DATA = { benchmarks: data };
+        }
+
+        console.log(`✅ Loaded benchmark data for ${machineId || 'default'}:`, Object.keys(BENCHMARK_DATA).length, 'configs');
         return true;
     } catch (error) {
         console.error('❌ Failed to load benchmark data:', error);

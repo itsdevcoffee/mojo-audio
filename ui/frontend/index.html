@@ -68,6 +68,15 @@
 
                 <div class="divider"></div>
 
+                <!-- Machine Selection -->
+                <div class="config-group">
+                    <label class="config-label">Machine</label>
+                    <select id="machineSelect" class="machine-select" onchange="selectMachine(this.value)">
+                        <option value="intel-i7-1360p">Intel i7-1360P (x86, AVX2)</option>
+                        <option value="nvidia-dgx-spark">NVIDIA DGX Spark (ARM, NEON)</option>
+                    </select>
+                </div>
+
                 <!-- BLAS Backend -->
                 <div class="config-group">
                     <label class="config-label">BLAS</label>
@@ -225,6 +234,32 @@
                 </section>
 
                 <section class="modal-section">
+                    <h3>💻 Benchmark Hardware</h3>
+                    <div class="hw-compact">
+                        <div class="hw-row">
+                            <span class="hw-icon">🖥️</span>
+                            <span class="hw-label">CPU</span>
+                            <span class="hw-value">Intel i7-1360P (12C/16T)</span>
+                        </div>
+                        <div class="hw-row">
+                            <span class="hw-icon">🎮</span>
+                            <span class="hw-label">GPU</span>
+                            <span class="hw-value">RTX 4060 Ti + Intel Iris Xe</span>
+                        </div>
+                        <div class="hw-row">
+                            <span class="hw-icon">🐧</span>
+                            <span class="hw-label">OS</span>
+                            <span class="hw-value">Fedora 43 (Kernel 6.18.4)</span>
+                        </div>
+                        <div class="hw-row">
+                            <span class="hw-icon">🔥</span>
+                            <span class="hw-label">Mojo</span>
+                            <span class="hw-value">0.26.2.0.dev2026020405</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="modal-section">
                     <h3>How It Works</h3>
                     <ul class="feature-list">
                         <li>
@@ -256,42 +291,6 @@
                             </div>
                         </li>
                     </ul>
-                </section>
-
-                <section class="modal-section">
-                    <h3>Benchmark Hardware</h3>
-                    <div class="hardware-grid">
-                        <div class="hw-category">
-                            <h4>CPU</h4>
-                            <p>13th Gen Intel Core i7-1360P</p>
-                            <span class="hw-detail">12 cores, 16 threads</span>
-                        </div>
-                        <div class="hw-category">
-                            <h4>GPU (Primary)</h4>
-                            <p>NVIDIA GeForce RTX 4060 Ti</p>
-                            <span class="hw-detail">Driver: 580.119.02</span>
-                        </div>
-                        <div class="hw-category">
-                            <h4>GPU (iGPU)</h4>
-                            <p>Intel Raptor Lake-P</p>
-                            <span class="hw-detail">Iris Xe Graphics</span>
-                        </div>
-                        <div class="hw-category">
-                            <h4>Operating System</h4>
-                            <p>Fedora Linux 43</p>
-                            <span class="hw-detail">Kernel 6.18.4-200.fc43.x86_64</span>
-                        </div>
-                        <div class="hw-category">
-                            <h4>Display Server</h4>
-                            <p>Hyprland 0.53.0</p>
-                            <span class="hw-detail">Wayland compositor</span>
-                        </div>
-                        <div class="hw-category">
-                            <h4>Mojo Version</h4>
-                            <p>0.26.2.0.dev2026020405</p>
-                            <span class="hw-detail">Max Nightly (Feb 4, 2026)</span>
-                        </div>
-                    </div>
                 </section>
 
                 <section class="modal-section modal-cta">

@@ -4,8 +4,16 @@ Generate pre-computed benchmark data for demo mode.
 
 Runs all 24 configuration combinations and saves results to JSON.
 This data is used for the static demo deployment.
+
+Usage:
+    python generate_demo_data.py [--machine MACHINE_ID] [--cpu CPU_NAME] [--cores CORES]
+
+Examples:
+    python generate_demo_data.py --machine intel-i7-1360p --cpu "Intel i7-1360P" --cores 12
+    python generate_demo_data.py --machine nvidia-dgx-spark --cpu "ARM Neoverse" --cores 20
 """
 
+import argparse
 import json
 import subprocess
 import sys
@@ -159,20 +167,46 @@ def print_summary(results: Dict):
 
 
 if __name__ == "__main__":
-    output_file = REPO_ROOT / "ui" / "static" / "data" / "benchmark_results.json"
+    parser = argparse.ArgumentParser(description="Generate benchmark data for demo mode")
+    parser.add_argument("--machine", default="default", help="Machine identifier (e.g., intel-i7-1360p)")
+    parser.add_argument("--cpu", default="Unknown CPU", help="CPU name for metadata")
+    parser.add_argument("--cores", type=int, default=0, help="Number of CPU cores")
+    parser.add_argument("--platform", default="linux-x64", help="Platform (e.g., linux-x64, linux-arm64)")
+    args = parser.parse_args()
+
+    # Determine output filename
+    if args.machine == "default":
+        output_file = REPO_ROOT / "ui" / "static" / "data" / "benchmark_results.json"
+    else:
+        output_file = REPO_ROOT / "ui" / "static" / "data" / f"benchmark_results_{args.machine}.json"
 
     print("mojo-audio Benchmark Data Generator")
     print("=" * 60)
+    print(f"Machine: {args.machine}")
+    print(f"CPU: {args.cpu}")
+    print(f"Cores: {args.cores}")
+    print(f"Platform: {args.platform}")
     print()
 
     # Generate all benchmarks
     results = generate_all_benchmarks()
 
+    # Add metadata
+    metadata = {
+        "machine_id": args.machine,
+        "cpu_name": args.cpu,
+        "cores": args.cores,
+        "platform": args.platform,
+        "generated_at": "2026-02-04",
+        "benchmarks": results
+    }
+
     # Save to file
-    save_results(results, output_file)
+    save_results(metadata, output_file)
 
     # Print summary
     print_summary(results)
 
     print("🎉 Done! Use this data for static demo deployment.")
-    print(f"   Import in frontend: fetch('/static/data/benchmark_results.json')")
+    print(f"   File: {output_file}")
+    print(f"   Import: fetch('/static/data/{output_file.name}')")

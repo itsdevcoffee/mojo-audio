@@ -10,6 +10,8 @@ const SAMPLE_RATE = 16000;
 let selectedDuration = 30;
 let selectedFFT = 400;
 let selectedBLAS = 'mkl';
+let selectedMachine = 'intel-i7-1360p';
+let machinesConfig = null;
 let benchmarkResults = null;
 let optimizationChart = null;
 
@@ -27,6 +29,40 @@ function selectToggle(stateKey, value, btn) {
 function selectDuration(duration, btn) { selectToggle('duration', duration, btn); }
 function selectFFT(size, btn) { selectToggle('fft', size, btn); }
 function selectBLAS(backend, btn) { selectToggle('blas', backend, btn); }
+
+// Machine selection
+async function selectMachine(machineId) {
+    selectedMachine = machineId;
+    const machine = machinesConfig?.machines[machineId];
+
+    if (machine) {
+        // Update BLAS options based on machine capabilities
+        const mklBtn = document.getElementById('blasMKL');
+        const openblasBtn = document.getElementById('blasOpenBLAS');
+
+        if (machine.blas_backends.includes('mkl')) {
+            mklBtn.style.display = 'inline-block';
+            if (selectedBLAS === 'mkl') {
+                mklBtn.classList.add('active');
+                openblasBtn.classList.remove('active');
+            }
+        } else {
+            mklBtn.style.display = 'none';
+            // Force OpenBLAS if MKL not available
+            if (selectedBLAS === 'mkl') {
+                selectedBLAS = 'openblas';
+                openblasBtn.classList.add('active');
+            }
+        }
+
+        // Reload benchmark data for this machine (if demo mode)
+        if (typeof loadBenchmarkData === 'function') {
+            await loadBenchmarkData(machineId);
+        }
+
+        console.log(`Switched to machine: ${machine.name} (${machine.platform}, ${machine.simd})`);
+    }
+}
 
 function incrementRuns() {
     const input = document.getElementById('runs');
@@ -385,9 +421,31 @@ function showLastResult() {
     }
 }
 
+// Load machines configuration
+async function loadMachines() {
+    try {
+        const response = await fetch('/static/data/machines.json');
+        machinesConfig = await response.json();
+        window.machinesConfig = machinesConfig;  // Make globally available
+        selectedMachine = machinesConfig.default || 'intel-i7-1360p';
+
+        // Set initial machine in selector
+        const machineSelect = document.getElementById('machineSelect');
+        if (machineSelect) {
+            machineSelect.value = selectedMachine;
+            await selectMachine(selectedMachine);
+        }
+
+        console.log('✅ Loaded machines:', Object.keys(machinesConfig.machines).join(', '));
+    } catch (error) {
+        console.error('❌ Failed to load machines config:', error);
+    }
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     console.log('mojo-audio benchmark UI loaded!');
     console.log('Dev Coffee brand theme with split-radix FFT');
+    loadMachines();
     showLastResult();
 });
