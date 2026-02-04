@@ -785,3 +785,458 @@ body {
 html {
     scroll-behavior: smooth;
 }
+
+/* ============================================ */
+/* Custom Scrollbar - Terminal Theme           */
+/* ============================================ */
+
+/* Webkit browsers (Chrome, Safari, Edge) */
+::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+}
+
+::-webkit-scrollbar-track {
+    background: rgba(13, 17, 23, 0.8);
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg,
+        rgba(0, 255, 157, 0.3),
+        rgba(0, 255, 157, 0.2)
+    );
+    border-radius: 10px;
+    border: 2px solid rgba(13, 17, 23, 0.8);
+    transition: all 0.3s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg,
+        rgba(0, 255, 157, 0.5),
+        rgba(0, 255, 157, 0.4)
+    );
+    box-shadow: 0 0 8px rgba(0, 255, 157, 0.3);
+}
+
+::-webkit-scrollbar-thumb:active {
+    background: var(--green-primary);
+}
+
+/* Firefox */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 255, 157, 0.3) rgba(13, 17, 23, 0.8);
+}
+
+/* Modal scrollbar - slightly more visible */
+.modal-content::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg,
+        rgba(0, 255, 157, 0.4),
+        rgba(0, 255, 157, 0.3)
+    );
+}
+
+.modal-content::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg,
+        rgba(0, 255, 157, 0.6),
+        rgba(0, 255, 157, 0.5)
+    );
+    box-shadow: 0 0 12px rgba(0, 255, 157, 0.4);
+}
+
+/* ============================================ */
+/* Interactive Status Bar - Demo Mode          */
+/* ============================================ */
+
+.mode-status.clickable {
+    cursor: pointer;
+    position: relative;
+    transition: all 0.3s ease;
+}
+
+.mode-status.clickable:hover {
+    color: var(--green-primary);
+    text-shadow: 0 0 8px rgba(0, 255, 157, 0.3);
+}
+
+.mode-status.clickable::after {
+    content: '🛈';
+    margin-left: 6px;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.mode-status.clickable:hover::after {
+    opacity: 1;
+}
+
+/* ============================================ */
+/* Demo Mode Info Modal                        */
+/* ============================================ */
+
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    padding: 20px;
+    animation: fadeIn 0.3s ease-out;
+}
+
+.modal-content {
+    background: var(--bg-secondary);
+    border: 1px solid rgba(0, 255, 157, 0.2);
+    border-radius: 16px;
+    max-width: 800px;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5),
+                0 0 0 1px rgba(0, 255, 157, 0.1);
+    animation: slideInUp 0.4s ease-out;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 24px 28px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.modal-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.modal-icon {
+    font-size: 28px;
+}
+
+.modal-title h2 {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.modal-close {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 32px;
+    cursor: pointer;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    transition: all 0.2s ease;
+}
+
+.modal-close:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--green-primary);
+}
+
+.modal-body {
+    padding: 28px;
+}
+
+.modal-section {
+    margin-bottom: 32px;
+}
+
+.modal-section:last-child {
+    margin-bottom: 0;
+}
+
+.modal-section h3 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--green-primary);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.modal-section p {
+    color: var(--text-secondary);
+    line-height: 1.7;
+    margin-bottom: 16px;
+}
+
+.modal-section strong {
+    color: var(--text-primary);
+}
+
+/* Info Box */
+.info-box {
+    background: rgba(0, 255, 157, 0.05);
+    border: 1px solid rgba(0, 255, 157, 0.2);
+    border-radius: 12px;
+    padding: 20px;
+    margin-top: 16px;
+}
+
+.info-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.info-item:last-child {
+    border-bottom: none;
+}
+
+.info-label {
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.info-value {
+    color: var(--green-primary);
+    font-weight: 600;
+    font-size: 13px;
+}
+
+/* Feature List */
+.feature-list {
+    list-style: none;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.feature-list li {
+    display: flex;
+    gap: 12px;
+    padding: 16px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    transition: all 0.2s ease;
+}
+
+.feature-list li:hover {
+    background: rgba(0, 255, 157, 0.05);
+    border-color: rgba(0, 255, 157, 0.2);
+}
+
+.feature-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+}
+
+.feature-list strong {
+    color: var(--text-primary);
+    display: block;
+    margin-bottom: 4px;
+}
+
+.feature-list div {
+    color: var(--text-secondary);
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+/* Hardware Specs - Compact Design */
+.hw-compact {
+    background: rgba(0, 255, 157, 0.04);
+    border: 1px solid rgba(0, 255, 157, 0.15);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-top: 12px;
+}
+
+.hw-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    transition: all 0.2s ease;
+}
+
+.hw-row:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.hw-row:hover {
+    padding-left: 4px;
+}
+
+.hw-icon {
+    font-size: 18px;
+    width: 24px;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.hw-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    width: 60px;
+    flex-shrink: 0;
+}
+
+.hw-value {
+    font-size: 13px;
+    color: var(--text-primary);
+    font-weight: 500;
+    font-family: 'SF Mono', monospace;
+    flex: 1;
+}
+
+/* CTA Section */
+.modal-cta {
+    background: linear-gradient(135deg,
+        rgba(0, 255, 157, 0.08),
+        rgba(0, 255, 157, 0.03)
+    );
+    border: 1px solid rgba(0, 255, 157, 0.2);
+    border-radius: 12px;
+    padding: 24px;
+    text-align: center;
+}
+
+.modal-cta h3 {
+    justify-content: center;
+    margin-bottom: 12px;
+}
+
+.cta-buttons {
+    display: flex;
+    gap: 12px;
+    margin-top: 20px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.cta-button {
+    padding: 12px 24px;
+    border-radius: 10px;
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 14px;
+    transition: all 0.3s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.cta-button.primary {
+    background: var(--green-primary);
+    color: #0d1117;
+    box-shadow: 0 4px 16px rgba(0, 255, 157, 0.3);
+}
+
+.cta-button.primary:hover {
+    background: #00ffb3;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 24px rgba(0, 255, 157, 0.4);
+}
+
+.cta-button.secondary {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-primary);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.cta-button.secondary:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: var(--green-primary);
+    color: var(--green-primary);
+}
+
+/* Animations */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes slideInUp {
+    from {
+        opacity: 0;
+        transform: translateY(40px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .modal-content {
+        max-width: 100%;
+        margin: 20px;
+    }
+
+    .hardware-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .cta-buttons {
+        flex-direction: column;
+    }
+
+    .cta-button {
+        width: 100%;
+        justify-content: center;
+    }
+}
+
+/* Machine selector dropdown */
+.machine-select {
+    width: 100%;
+    padding: 10px 12px;
+    background: rgba(30, 35, 40, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    color: #8b949e;
+    font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.machine-select:hover {
+    border-color: rgba(0, 255, 157, 0.3);
+    background: rgba(30, 35, 40, 0.8);
+}
+
+.machine-select:focus {
+    outline: none;
+    border-color: #00ff9d;
+    box-shadow: 0 0 0 3px rgba(0, 255, 157, 0.1);
+}
+
+.machine-select option {
+    background: #161b22;
+    color: #c9d1d9;
+    padding: 8px;
+}

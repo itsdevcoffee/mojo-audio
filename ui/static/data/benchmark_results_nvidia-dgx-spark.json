@@ -1,0 +1,33 @@
+{
+  "machine_id": "nvidia-dgx-spark",
+  "cpu_name": "ARM Neoverse (20-core)",
+  "cores": 20,
+  "platform": "linux-arm64",
+  "generated_at": "2026-02-04",
+  "benchmarks": {
+    "1s_400fft_openblas": {
+      "config": {"duration": 1, "fft_size": 400, "blas": "openblas", "iterations": 10},
+      "mojo": {"avg_time_ms": 0.34, "std_time_ms": 0.02, "throughput_realtime": 2941.2},
+      "librosa": {"avg_time_ms": 0.44, "std_time_ms": 0.04, "throughput_realtime": 2272.7},
+      "speedup_factor": 0.77,
+      "faster_percentage": -29.4,
+      "mojo_is_faster": true
+    },
+    "10s_400fft_openblas": {
+      "config": {"duration": 10, "fft_size": 400, "blas": "openblas", "iterations": 5},
+      "mojo": {"avg_time_ms": 1.52, "std_time_ms": 0.05, "throughput_realtime": 6578.9},
+      "librosa": {"avg_time_ms": 1.25, "std_time_ms": 0.05, "throughput_realtime": 8000.0},
+      "speedup_factor": 0.82,
+      "faster_percentage": -21.6,
+      "mojo_is_faster": false
+    },
+    "30s_400fft_openblas": {
+      "config": {"duration": 30, "fft_size": 400, "blas": "openblas", "iterations": 3},
+      "mojo": {"avg_time_ms": 4.42, "std_time_ms": 0.15, "throughput_realtime": 6787.3},
+      "librosa": {"avg_time_ms": 3.20, "std_time_ms": 0.28, "throughput_realtime": 9375.0},
+      "speedup_factor": 0.72,
+      "faster_percentage": -38.1,
+      "mojo_is_faster": false
+    }
+  }
+}
