@@ -105,6 +105,61 @@ mojo -O3 -I src your_code.mojo
 
 ---
 
+## 🔨 **Building from Source**
+
+### Prerequisites
+
+- **Mojo**: Version 0.26+ (install via [Modular](https://docs.modular.com/mojo/manual/install/))
+- **pixi**: Package manager ([install pixi](https://pixi.sh))
+- **Platform**: Linux x86_64 or macOS (Apple Silicon/Intel)
+
+### Linux Build
+
+```bash
+# Clone and setup
+git clone https://github.com/itsdevcoffee/mojo-audio.git
+cd mojo-audio
+
+# Install dependencies
+pixi install
+
+# Build FFI library (optional - for C/Rust/Python integration)
+pixi run build-ffi-optimized
+
+# Verify
+ls libmojo_audio.so  # Should show ~26KB shared library
+```
+
+### macOS Build
+
+> **Note:** Due to Mojo API changes, macOS builds currently require specific setup. See our [macOS Build Guide](docs/guides/02-04-2026-macos-build-guide.md) for detailed instructions.
+
+**Quick build:**
+```bash
+# Clone and setup
+git clone https://github.com/itsdevcoffee/mojo-audio.git
+cd mojo-audio
+
+# Install dependencies
+pixi install
+
+# Build FFI library (.dylib for macOS)
+pixi run build-ffi-optimized
+
+# Verify
+ls libmojo_audio.dylib  # Should show ~20-30KB shared library
+```
+
+**Troubleshooting:** If you encounter build errors on macOS, please refer to the [detailed macOS build guide](docs/guides/02-04-2026-macos-build-guide.md) which includes solutions for common issues.
+
+### Building for Distribution
+
+For creating release binaries:
+- **Linux**: Use `pixi run build-ffi-optimized` (creates `libmojo_audio.so`)
+- **macOS**: Follow the [manual build guide](docs/guides/02-04-2026-macos-manual-build-v0.1.1.md)
+
+---
+
 ## 📊 **Benchmarks**
 
 ### vs Competition
