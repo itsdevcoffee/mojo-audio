@@ -21,7 +21,7 @@ from math.constants import pi
 from memory import UnsafePointer
 from memory.unsafe_pointer import alloc
 
-from .types import (
+from types import (
     MojoMelConfig,
     MojoMelSpectrogram,
     MOJO_AUDIO_SUCCESS,
