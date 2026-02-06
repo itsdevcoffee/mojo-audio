@@ -11,6 +11,7 @@ docs/tmp
 
 # FFI build artifacts
 *.so
+*.dylib
 *.a
 *.o
 test_*
@@ -18,6 +19,7 @@ test_*
 
 # Release artifacts (uploaded to GitHub Releases, not committed)
 release/
+*.tar.gz
 
 # Prompt/handoff documents
 *HANDOFF*.md
