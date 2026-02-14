@@ -5,29 +5,257 @@
   "platform": "linux-arm64",
   "generated_at": "2026-02-04",
   "benchmarks": {
+    "1s_256fft_openblas": {
+      "config": {
+        "duration": 1,
+        "fft_size": 256,
+        "blas": "openblas",
+        "iterations": 20
+      },
+      "mojo": {
+        "avg_time_ms": 0.39,
+        "std_time_ms": 0.07,
+        "throughput_realtime": 2538.1
+      },
+      "librosa": {
+        "avg_time_ms": 0.37,
+        "std_time_ms": 0.07,
+        "throughput_realtime": 2673.8
+      },
+      "speedup_factor": 0.95,
+      "faster_percentage": -5.4,
+      "mojo_is_faster": false
+    },
     "1s_400fft_openblas": {
-      "config": {"duration": 1, "fft_size": 400, "blas": "openblas", "iterations": 10},
-      "mojo": {"avg_time_ms": 0.34, "std_time_ms": 0.02, "throughput_realtime": 2941.2},
-      "librosa": {"avg_time_ms": 0.44, "std_time_ms": 0.04, "throughput_realtime": 2272.7},
-      "speedup_factor": 0.77,
-      "faster_percentage": -29.4,
+      "config": {
+        "duration": 1,
+        "fft_size": 400,
+        "blas": "openblas",
+        "iterations": 20
+      },
+      "mojo": {
+        "avg_time_ms": 0.46,
+        "std_time_ms": 0.07,
+        "throughput_realtime": 2197.8
+      },
+      "librosa": {
+        "avg_time_ms": 0.42,
+        "std_time_ms": 0.04,
+        "throughput_realtime": 2358.5
+      },
+      "speedup_factor": 0.91,
+      "faster_percentage": -9.5,
+      "mojo_is_faster": false
+    },
+    "1s_512fft_openblas": {
+      "config": {
+        "duration": 1,
+        "fft_size": 512,
+        "blas": "openblas",
+        "iterations": 20
+      },
+      "mojo": {
+        "avg_time_ms": 0.5,
+        "std_time_ms": 0.1,
+        "throughput_realtime": 2000.0
+      },
+      "librosa": {
+        "avg_time_ms": 0.46,
+        "std_time_ms": 0.03,
+        "throughput_realtime": 2188.2
+      },
+      "speedup_factor": 0.92,
+      "faster_percentage": -8.7,
+      "mojo_is_faster": false
+    },
+    "1s_1024fft_openblas": {
+      "config": {
+        "duration": 1,
+        "fft_size": 1024,
+        "blas": "openblas",
+        "iterations": 20
+      },
+      "mojo": {
+        "avg_time_ms": 0.59,
+        "std_time_ms": 0.07,
+        "throughput_realtime": 1700.7
+      },
+      "librosa": {
+        "avg_time_ms": 0.69,
+        "std_time_ms": 0.03,
+        "throughput_realtime": 1459.9
+      },
+      "speedup_factor": 1.17,
+      "faster_percentage": 14.5,
+      "mojo_is_faster": true
+    },
+    "10s_256fft_openblas": {
+      "config": {
+        "duration": 10,
+        "fft_size": 256,
+        "blas": "openblas",
+        "iterations": 20
+      },
+      "mojo": {
+        "avg_time_ms": 1.29,
+        "std_time_ms": 0.15,
+        "throughput_realtime": 7745.9
+      },
+      "librosa": {
+        "avg_time_ms": 5.05,
+        "std_time_ms": 4.13,
+        "throughput_realtime": 1978.2
+      },
+      "speedup_factor": 3.91,
+      "faster_percentage": 74.5,
       "mojo_is_faster": true
     },
     "10s_400fft_openblas": {
-      "config": {"duration": 10, "fft_size": 400, "blas": "openblas", "iterations": 5},
-      "mojo": {"avg_time_ms": 1.52, "std_time_ms": 0.05, "throughput_realtime": 6578.9},
-      "librosa": {"avg_time_ms": 1.25, "std_time_ms": 0.05, "throughput_realtime": 8000.0},
-      "speedup_factor": 0.82,
-      "faster_percentage": -21.6,
+      "config": {
+        "duration": 10,
+        "fft_size": 400,
+        "blas": "openblas",
+        "iterations": 20
+      },
+      "mojo": {
+        "avg_time_ms": 1.72,
+        "std_time_ms": 0.18,
+        "throughput_realtime": 5830.9
+      },
+      "librosa": {
+        "avg_time_ms": 1.3,
+        "std_time_ms": 0.17,
+        "throughput_realtime": 7716.0
+      },
+      "speedup_factor": 0.76,
+      "faster_percentage": -32.3,
       "mojo_is_faster": false
     },
+    "10s_512fft_openblas": {
+      "config": {
+        "duration": 10,
+        "fft_size": 512,
+        "blas": "openblas",
+        "iterations": 20
+      },
+      "mojo": {
+        "avg_time_ms": 1.93,
+        "std_time_ms": 0.19,
+        "throughput_realtime": 5189.4
+      },
+      "librosa": {
+        "avg_time_ms": 6.0,
+        "std_time_ms": 0.01,
+        "throughput_realtime": 1666.9
+      },
+      "speedup_factor": 3.11,
+      "faster_percentage": 67.8,
+      "mojo_is_faster": true
+    },
+    "10s_1024fft_openblas": {
+      "config": {
+        "duration": 10,
+        "fft_size": 1024,
+        "blas": "openblas",
+        "iterations": 20
+      },
+      "mojo": {
+        "avg_time_ms": 2.93,
+        "std_time_ms": 0.27,
+        "throughput_realtime": 3410.6
+      },
+      "librosa": {
+        "avg_time_ms": 12.25,
+        "std_time_ms": 1.48,
+        "throughput_realtime": 816.3
+      },
+      "speedup_factor": 4.18,
+      "faster_percentage": 76.1,
+      "mojo_is_faster": true
+    },
+    "30s_256fft_openblas": {
+      "config": {
+        "duration": 30,
+        "fft_size": 256,
+        "blas": "openblas",
+        "iterations": 20
+      },
+      "mojo": {
+        "avg_time_ms": 3.25,
+        "std_time_ms": 0.3,
+        "throughput_realtime": 9233.6
+      },
+      "librosa": {
+        "avg_time_ms": 4.19,
+        "std_time_ms": 1.57,
+        "throughput_realtime": 7165.0
+      },
+      "speedup_factor": 1.29,
+      "faster_percentage": 22.4,
+      "mojo_is_faster": true
+    },
     "30s_400fft_openblas": {
-      "config": {"duration": 30, "fft_size": 400, "blas": "openblas", "iterations": 3},
-      "mojo": {"avg_time_ms": 4.42, "std_time_ms": 0.15, "throughput_realtime": 6787.3},
-      "librosa": {"avg_time_ms": 3.20, "std_time_ms": 0.28, "throughput_realtime": 9375.0},
-      "speedup_factor": 0.72,
-      "faster_percentage": -38.1,
+      "config": {
+        "duration": 30,
+        "fft_size": 400,
+        "blas": "openblas",
+        "iterations": 20
+      },
+      "mojo": {
+        "avg_time_ms": 4.26,
+        "std_time_ms": 0.15,
+        "throughput_realtime": 7037.3
+      },
+      "librosa": {
+        "avg_time_ms": 7.5,
+        "std_time_ms": 2.16,
+        "throughput_realtime": 4000.5
+      },
+      "speedup_factor": 1.76,
+      "faster_percentage": 43.2,
+      "mojo_is_faster": true
+    },
+    "30s_512fft_openblas": {
+      "config": {
+        "duration": 30,
+        "fft_size": 512,
+        "blas": "openblas",
+        "iterations": 20
+      },
+      "mojo": {
+        "avg_time_ms": 4.92,
+        "std_time_ms": 0.2,
+        "throughput_realtime": 6098.8
+      },
+      "librosa": {
+        "avg_time_ms": 4.46,
+        "std_time_ms": 0.33,
+        "throughput_realtime": 6724.9
+      },
+      "speedup_factor": 0.91,
+      "faster_percentage": -10.3,
       "mojo_is_faster": false
+    },
+    "30s_1024fft_openblas": {
+      "config": {
+        "duration": 30,
+        "fft_size": 1024,
+        "blas": "openblas",
+        "iterations": 20
+      },
+      "mojo": {
+        "avg_time_ms": 8.45,
+        "std_time_ms": 1.61,
+        "throughput_realtime": 3549.0
+      },
+      "librosa": {
+        "avg_time_ms": 23.37,
+        "std_time_ms": 2.14,
+        "throughput_realtime": 1283.8
+      },
+      "speedup_factor": 2.77,
+      "faster_percentage": 63.8,
+      "mojo_is_faster": true
     }
   }
 }

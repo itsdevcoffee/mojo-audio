@@ -83,17 +83,19 @@ def run_benchmark(impl: str, duration: int, fft_size: int, blas: str = "mkl") ->
         return None
 
 
-def generate_all_benchmarks() -> Dict:
-    """Generate all 24 benchmark configurations."""
+def generate_all_benchmarks(blas_backends: List[str] = None) -> Dict:
+    """Generate all benchmark configurations."""
+    if blas_backends is None:
+        blas_backends = BLAS_BACKENDS
     results = {}
-    total = len(DURATIONS) * len(FFT_SIZES) * len(BLAS_BACKENDS)
+    total = len(DURATIONS) * len(FFT_SIZES) * len(blas_backends)
     current = 0
 
     print(f"🚀 Generating {total} benchmark configurations...\n")
 
     for duration in DURATIONS:
         for fft_size in FFT_SIZES:
-            for blas in BLAS_BACKENDS:
+            for blas in blas_backends:
                 current += 1
                 config_key = f"{duration}s_{fft_size}fft_{blas}"
 
@@ -172,6 +174,7 @@ if __name__ == "__main__":
     parser.add_argument("--cpu", default="Unknown CPU", help="CPU name for metadata")
     parser.add_argument("--cores", type=int, default=0, help="Number of CPU cores")
     parser.add_argument("--platform", default="linux-x64", help="Platform (e.g., linux-x64, linux-arm64)")
+    parser.add_argument("--blas-only", default=None, help="Only run specific BLAS backend (e.g., openblas)")
     args = parser.parse_args()
 
     # Determine output filename
@@ -186,10 +189,15 @@ if __name__ == "__main__":
     print(f"CPU: {args.cpu}")
     print(f"Cores: {args.cores}")
     print(f"Platform: {args.platform}")
+
+    # Filter BLAS backends if specified
+    blas_backends = [args.blas_only] if args.blas_only else None
+    if args.blas_only:
+        print(f"BLAS: {args.blas_only} only")
     print()
 
     # Generate all benchmarks
-    results = generate_all_benchmarks()
+    results = generate_all_benchmarks(blas_backends)
 
     # Add metadata
     metadata = {
