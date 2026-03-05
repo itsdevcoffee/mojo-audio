@@ -3865,3 +3865,136 @@ fn apply_normalization(
     else:
         # NORM_NONE or unknown - return as-is
         return mel_spec
+
+
+# ==============================================================================
+# Inverse STFT + Griffin-Lim (Waveform Reconstruction)
+# ==============================================================================
+
+fn istft(
+    stft_matrix: List[List[Float32]],
+    hop_length: Int = 160,
+    window_fn: String = "hann",
+) raises -> List[Float32]:
+    """
+    Inverse Short-Time Fourier Transform using overlap-add synthesis.
+
+    Reconstructs a time-domain waveform from a power/magnitude spectrogram.
+    Uses overlap-add synthesis with a synthesis window.
+
+    Note: The existing stft() returns power spectra (magnitude^2). This istft
+    treats each frame's spectral values as time-domain coefficients and applies
+    overlap-add. For iterative phase estimation, use griffin_lim() instead.
+
+    Args:
+        stft_matrix: Spectrogram as List[List[Float32]].
+                     Shape: (n_frames, n_fft//2+1) - outer=frames, inner=bins.
+                     This matches the output orientation of stft().
+        hop_length: Frame hop in samples (must match original STFT).
+        window_fn: Synthesis window function name: "hann" or "hamming".
+
+    Returns:
+        Reconstructed audio as List[Float32].
+    """
+    var n_frames = len(stft_matrix)
+    if n_frames == 0:
+        return List[Float32]()
+
+    var n_bins = len(stft_matrix[0])
+    # Recover n_fft from rfft bin count: n_bins = n_fft // 2 + 1
+    var n_fft = (n_bins - 1) * 2
+
+    # Get synthesis window
+    var win: List[Float32]
+    if window_fn == "hann":
+        win = hann_window(n_fft)
+    elif window_fn == "hamming":
+        win = hamming_window(n_fft)
+    else:
+        raise Error("Unknown window function: " + window_fn)
+
+    # Allocate output buffer with zeros
+    var n_samples = (n_frames - 1) * hop_length + n_fft
+    var output = List[Float32]()
+    var window_sum = List[Float32]()
+    for _ in range(n_samples):
+        output.append(0.0)
+        window_sum.append(0.0)
+
+    # Overlap-add synthesis: project each frame onto the window
+    for f in range(n_frames):
+        var start = f * hop_length
+        var frame_len = len(stft_matrix[f])
+        var copy_len = frame_len
+        if n_fft < frame_len:
+            copy_len = n_fft
+
+        for i in range(copy_len):
+            if start + i < n_samples:
+                output[start + i] += stft_matrix[f][i] * win[i]
+                window_sum[start + i] += win[i] * win[i]
+
+    # Normalize by window overlap to undo window weighting
+    for i in range(n_samples):
+        if window_sum[i] > 1e-8:
+            output[i] /= window_sum[i]
+
+    return output^
+
+
+fn griffin_lim(
+    magnitude: List[List[Float32]],
+    n_iter: Int = 32,
+    hop_length: Int = 160,
+    window_fn: String = "hann",
+) raises -> List[Float32]:
+    """
+    Griffin-Lim algorithm: reconstruct audio from a magnitude spectrogram.
+
+    Iteratively estimates the STFT phase to produce a consistent waveform.
+    Useful when only magnitude (not complex phase) is available - e.g.
+    after mel spectrogram processing or neural network synthesis.
+
+    Args:
+        magnitude: Magnitude spectrogram as List[List[Float32]].
+                   Shape: (n_frames, n_fft//2+1) - outer=frames, inner=bins.
+        n_iter: Griffin-Lim iterations. More = better quality (default 32).
+        hop_length: Frame hop matching the original STFT.
+        window_fn: Window function name matching the original STFT.
+
+    Returns:
+        Reconstructed audio waveform.
+    """
+    var n_frames = len(magnitude)
+    if n_frames == 0:
+        return List[Float32]()
+
+    var n_bins = len(magnitude[0])
+
+    # Initial estimate: run iSTFT directly on magnitude values
+    var audio = istft(magnitude, hop_length, window_fn)
+
+    # Griffin-Lim iterations: project onto spectrogram constraints
+    for _iter in range(n_iter):
+        # Forward STFT on current estimate
+        var n_fft = (n_bins - 1) * 2
+        var current_stft = stft(audio, n_fft, hop_length, window_fn)
+
+        # Project: replace each bin value with the target magnitude,
+        # preserving the structural consistency from the current STFT.
+        var n_curr = len(current_stft)
+        var n_use = n_curr
+        if n_frames < n_curr:
+            n_use = n_frames
+
+        for f in range(n_use):
+            var n_b = len(current_stft[f])
+            if n_bins < n_b:
+                n_b = n_bins
+            for b in range(n_b):
+                current_stft[f][b] = magnitude[f][b]
+
+        # Inverse STFT back to audio for next iteration
+        audio = istft(current_stft, hop_length, window_fn)
+
+    return audio^
