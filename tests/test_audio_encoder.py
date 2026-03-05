@@ -333,3 +333,111 @@ class TestAttention:
         # Non-trivial: output must differ from input by more than floating point noise
         diff = np.abs(out - x).mean()
         assert diff > 0.01, f"Attention output too close to identity (mean diff={diff:.6f})"
+
+
+class TestTransformerBlock:
+    """Test a single transformer block."""
+
+    def _make_random_block_weights(self, hidden=768, ffn_dim=3072):
+        """Random weights for one block."""
+        import numpy as np
+        w = {}
+        # LayerNorms
+        for name in ["norm1", "norm2"]:
+            w[f"{name}.weight"] = np.ones(hidden, dtype=np.float32)
+            w[f"{name}.bias"] = np.zeros(hidden, dtype=np.float32)
+        # Attention projections: [out, in] PyTorch format
+        for proj in ["attn.q", "attn.k", "attn.v", "attn.out"]:
+            w[f"{proj}.weight"] = np.random.randn(hidden, hidden).astype(np.float32) * 0.02
+            w[f"{proj}.bias"] = np.zeros(hidden, dtype=np.float32)
+        # FFN
+        w["ffn.fc1.weight"] = np.random.randn(ffn_dim, hidden).astype(np.float32) * 0.02
+        w["ffn.fc1.bias"] = np.zeros(ffn_dim, dtype=np.float32)
+        w["ffn.fc2.weight"] = np.random.randn(hidden, ffn_dim).astype(np.float32) * 0.02
+        w["ffn.fc2.bias"] = np.zeros(hidden, dtype=np.float32)
+        return w
+
+    def test_output_shape_preserved(self, cpu_device):
+        """Block output shape matches input [1, 49, 768]."""
+        import numpy as np
+        from max import engine
+        from max.graph import Graph, TensorType, DeviceRef, Dim
+        from max.dtype import DType
+        from models.audio_encoder import _transformer_block_ops
+
+        cpu_ref = DeviceRef.CPU()
+        block_w = self._make_random_block_weights()
+
+        with Graph(
+            "block_test",
+            input_types=[TensorType(DType.float32, [1, Dim("T"), 768], cpu_ref)],
+        ) as g:
+            x = g.inputs[0]
+            out = _transformer_block_ops(x, block_w, cpu_ref)
+            g.output(out)
+
+        model = engine.InferenceSession(devices=[cpu_device]).load(g)
+        inp = np.random.randn(1, 49, 768).astype(np.float32)
+        result = model.execute(inp)
+        tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
+        out_arr = tensor.to_numpy()
+        assert out_arr.shape == (1, 49, 768), f"Expected (1,49,768) got {out_arr.shape}"
+
+    def test_residual_applied(self, cpu_device):
+        """With zero weights, block should return input (residual only path)."""
+        import numpy as np
+        from max import engine
+        from max.graph import Graph, TensorType, DeviceRef, Dim
+        from max.dtype import DType
+        from models.audio_encoder import _transformer_block_ops
+
+        cpu_ref = DeviceRef.CPU()
+        # Zero out all projection weights — attention and FFN produce zeros
+        # Residual connections should preserve the input
+        block_w = self._make_random_block_weights()
+        for k in block_w:
+            if "weight" in k and "norm" not in k:
+                block_w[k] = np.zeros_like(block_w[k])
+
+        with Graph(
+            "block_zero",
+            input_types=[TensorType(DType.float32, [1, Dim("T"), 768], cpu_ref)],
+        ) as g:
+            x = g.inputs[0]
+            out = _transformer_block_ops(x, block_w, cpu_ref)
+            g.output(out)
+
+        model = engine.InferenceSession(devices=[cpu_device]).load(g)
+        inp = np.random.randn(1, 49, 768).astype(np.float32)
+        result = model.execute(inp)
+        tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
+        out_arr = tensor.to_numpy()
+        # With zero weights, attention output = 0 and FFN output = 0
+        # x + 0 + 0 = x (residual connections preserve input)
+        diff = np.abs(out_arr - inp).max()
+        assert diff < 0.01, f"Zero weights: expected output ≈ input, got max diff {diff:.4f}"
+
+    def test_output_not_nan(self, cpu_device):
+        """Block output must not contain NaN or Inf."""
+        import numpy as np
+        from max import engine
+        from max.graph import Graph, TensorType, DeviceRef, Dim
+        from max.dtype import DType
+        from models.audio_encoder import _transformer_block_ops
+
+        cpu_ref = DeviceRef.CPU()
+        with Graph(
+            "block_nan_check",
+            input_types=[TensorType(DType.float32, [1, Dim("T"), 768], cpu_ref)],
+        ) as g:
+            x = g.inputs[0]
+            out = _transformer_block_ops(x, self._make_random_block_weights(), cpu_ref)
+            g.output(out)
+
+        model = engine.InferenceSession(devices=[cpu_device]).load(g)
+        inp = np.random.randn(1, 49, 768).astype(np.float32)
+        result = model.execute(inp)
+        tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
+        out_arr = tensor.to_numpy()
+        assert not np.isnan(out_arr).any()
+        assert not np.isinf(out_arr).any()
