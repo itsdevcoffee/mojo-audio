@@ -16,6 +16,7 @@ docs/tmp
 *.o
 test_*
 !tests/
+!tests/test_*.py
 
 # Release artifacts (uploaded to GitHub Releases, not committed)
 release/
