@@ -123,6 +123,67 @@ fn test_convenience_functions() raises:
     print("  Convenience functions work!")
 
 
+fn test_antialias_downsampling() raises:
+    """Frequencies above new Nyquist must be attenuated when downsampling.
+
+    48k->16k: new Nyquist is 8kHz. A 7kHz tone should survive.
+    A tone at 15kHz (above 8kHz Nyquist) must be heavily attenuated.
+    """
+    print("Testing anti-aliasing during downsampling...")
+    var n = 9600  # 0.2 seconds at 48kHz
+
+    # 7kHz tone (below new Nyquist of 8kHz) -- should survive
+    var tone_7k = List[Float32]()
+    for i in range(n):
+        var t = Float32(i) / Float32(48000)
+        tone_7k.append(0.8 * sin(2.0 * pi * 7000.0 * t))
+    var dst_7k = resample(tone_7k, 48000, 16000)
+
+    # Measure output amplitude (skip edge samples for Lanczos transient)
+    var max_7k = Float32(0.0)
+    var skip = 50
+    for i in range(skip, len(dst_7k) - skip):
+        var v = dst_7k[i] if dst_7k[i] >= 0.0 else -dst_7k[i]
+        if v > max_7k:
+            max_7k = v
+
+    # 15kHz tone (above new Nyquist) -- must be attenuated
+    var tone_15k = List[Float32]()
+    for i in range(n):
+        var t = Float32(i) / Float32(48000)
+        tone_15k.append(0.8 * sin(2.0 * pi * 15000.0 * t))
+    var dst_15k = resample(tone_15k, 48000, 16000)
+
+    var max_15k = Float32(0.0)
+    for i in range(skip, len(dst_15k) - skip):
+        var v = dst_15k[i] if dst_15k[i] >= 0.0 else -dst_15k[i]
+        if v > max_15k:
+            max_15k = v
+
+    print("  7kHz tone amplitude (should be ~0.8):", max_7k)
+    print("  15kHz tone amplitude (should be <0.3):", max_15k)
+
+    # 7kHz should mostly survive (allow 30% loss from filter roll-off)
+    if max_7k < 0.4:
+        raise Error("FAIL: 7kHz tone was over-attenuated: " + String(max_7k))
+
+    # 15kHz must be heavily attenuated (above Nyquist)
+    if max_15k > 0.3:
+        raise Error("FAIL: 15kHz alias not attenuated: " + String(max_15k) + " (should be <0.3)")
+
+    print("  Anti-aliasing working correctly!")
+
+
+fn test_empty_input() raises:
+    """Empty input should return empty output without error."""
+    print("Testing empty input...")
+    var empty = List[Float32]()
+    var result = resample(empty, 48000, 16000)
+    if len(result) != 0:
+        raise Error("FAIL: expected empty output, got " + String(len(result)))
+    print("  Empty input returns empty output!")
+
+
 fn main() raises:
     test_identity_resample()
     test_downsample_48k_to_16k()
@@ -130,4 +191,6 @@ fn main() raises:
     test_upsample_16k_to_48k()
     test_amplitude_preservation()
     test_convenience_functions()
+    test_antialias_downsampling()
+    test_empty_input()
     print("\n=== All resampler tests passed! ===")
