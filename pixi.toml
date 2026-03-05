@@ -15,6 +15,7 @@ test-wav = "mojo -I src tests/test_wav_io.mojo"
 test-resample = "mojo -I src tests/test_resample.mojo"
 test-vad = "mojo -I src tests/test_vad.mojo"
 test-istft = "mojo -I src tests/test_istft.mojo"
+test-pitch = "mojo -I src tests/test_pitch.mojo"
 test = "mojo -I src tests/test_window.mojo && mojo -I src tests/test_fft.mojo && mojo -I src tests/test_mel.mojo"
 
 # Examples
