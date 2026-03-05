@@ -38,7 +38,7 @@ bench = "mojo -I src benchmarks/bench_mel_spectrogram.mojo"
 bench-optimized = "mojo -O3 -I src benchmarks/bench_mel_spectrogram.mojo"
 bench-python = "python benchmarks/compare_librosa.py"
 test-models = "pytest tests/test_audio_encoder.py -v -m 'not slow'"
-test-models-full = "pytest tests/test_audio_encoder.py -v"
+test-models-full = "pytest tests/test_audio_encoder.py -v -s"
 bench-models = "python experiments/contentvec-max/benchmark.py"
 
 # Development
