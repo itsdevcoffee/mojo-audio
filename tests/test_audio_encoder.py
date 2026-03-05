@@ -244,3 +244,92 @@ class TestFeatureExtractor:
         pt_w = np.zeros((512, 1, 10), dtype=np.float32)  # [C_out, C_in, K]
         max_w = _pt_weight_to_max(pt_w)
         assert max_w.shape == (10, 1, 1, 512), f"Expected (10,1,1,512) got {max_w.shape}"
+
+
+class TestAttention:
+    """Tests for multi-head self-attention — no download required."""
+
+    def _make_random_weights(self, hidden=768):
+        """Random attention weights in PyTorch format [out, in]."""
+        import numpy as np
+        return {
+            "q.weight": np.random.randn(hidden, hidden).astype(np.float32),
+            "q.bias": np.zeros(hidden, dtype=np.float32),
+            "k.weight": np.random.randn(hidden, hidden).astype(np.float32),
+            "k.bias": np.zeros(hidden, dtype=np.float32),
+            "v.weight": np.random.randn(hidden, hidden).astype(np.float32),
+            "v.bias": np.zeros(hidden, dtype=np.float32),
+            "out.weight": np.random.randn(hidden, hidden).astype(np.float32),
+            "out.bias": np.zeros(hidden, dtype=np.float32),
+        }
+
+    def test_output_shape_seq49(self, cpu_device):
+        """[1, 49, 768] in -> [1, 49, 768] out."""
+        import numpy as np
+        from max import engine
+        from max.graph import DeviceRef
+        from models._attention import build_attention_graph
+
+        cpu_ref = DeviceRef.CPU()
+        graph = build_attention_graph(self._make_random_weights(), cpu_ref)
+        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
+
+        x = np.random.randn(1, 49, 768).astype(np.float32)
+        result = model.execute(x)
+        tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
+        out = tensor.to_numpy()
+        assert out.shape == (1, 49, 768), f"Expected (1,49,768) got {out.shape}"
+
+    def test_output_shape_seq99(self, cpu_device):
+        """Dynamic sequence length: [1, 99, 768] in -> [1, 99, 768] out."""
+        import numpy as np
+        from max import engine
+        from max.graph import DeviceRef
+        from models._attention import build_attention_graph
+
+        cpu_ref = DeviceRef.CPU()
+        graph = build_attention_graph(self._make_random_weights(), cpu_ref)
+        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
+
+        x = np.random.randn(1, 99, 768).astype(np.float32)
+        result = model.execute(x)
+        tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
+        out = tensor.to_numpy()
+        assert out.shape == (1, 99, 768), f"Expected (1,99,768) got {out.shape}"
+
+    def test_output_not_nan(self, cpu_device):
+        """Attention output must not contain NaN or Inf."""
+        import numpy as np
+        from max import engine
+        from max.graph import DeviceRef
+        from models._attention import build_attention_graph
+
+        cpu_ref = DeviceRef.CPU()
+        graph = build_attention_graph(self._make_random_weights(), cpu_ref)
+        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
+
+        x = np.random.randn(1, 49, 768).astype(np.float32)
+        result = model.execute(x)
+        tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
+        out = tensor.to_numpy()
+        assert not np.isnan(out).any(), "Output contains NaN"
+        assert not np.isinf(out).any(), "Output contains Inf"
+
+    def test_attention_is_not_identity(self, cpu_device):
+        """Attention output must differ from input (non-trivial transformation)."""
+        import numpy as np
+        from max import engine
+        from max.graph import DeviceRef
+        from models._attention import build_attention_graph
+
+        cpu_ref = DeviceRef.CPU()
+        graph = build_attention_graph(self._make_random_weights(), cpu_ref)
+        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
+
+        x = np.random.randn(1, 49, 768).astype(np.float32)
+        result = model.execute(x)
+        tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
+        out = tensor.to_numpy()
+        # Non-trivial: output must differ from input by more than floating point noise
+        diff = np.abs(out - x).mean()
+        assert diff > 0.01, f"Attention output too close to identity (mean diff={diff:.6f})"
