@@ -69,22 +69,22 @@ class TestWeightLoader:
     """Tests for _weight_loader — no model download required."""
 
     def test_detect_hubert_prefix(self):
-        """Detect 'hubert' prefix in HuBERT checkpoint keys."""
+        """Detect 'hubert.' prefix in HuBERT checkpoint keys."""
         from models._weight_loader import _detect_prefix
         keys = [
             "hubert.feature_extractor.conv_layers.0.conv.weight",
             "hubert.encoder.layers.0.attention.q_proj.weight",
         ]
-        assert _detect_prefix(keys) == "hubert"
+        assert _detect_prefix(keys) == "hubert."
 
     def test_detect_contentvec_prefix(self):
-        """Detect 'model' prefix in ContentVec checkpoint keys."""
+        """Detect 'model.' prefix in ContentVec checkpoint keys."""
         from models._weight_loader import _detect_prefix
         keys = [
             "model.feature_extractor.conv_layers.0.conv.weight",
             "model.encoder.layers.0.attention.q_proj.weight",
         ]
-        assert _detect_prefix(keys) == "model"
+        assert _detect_prefix(keys) == "model."
 
     def test_detect_prefix_raises_on_unknown(self):
         """Unknown prefix raises ValueError."""
@@ -93,39 +93,39 @@ class TestWeightLoader:
             _detect_prefix(["some.unknown.key"])
 
     def test_map_cnn_weight(self):
-        """CNN conv weight key maps correctly."""
+        """CNN conv weight key maps correctly (RVC-style hubert. prefix)."""
         from models._weight_loader import _map_key
-        assert _map_key("hubert.feature_extractor.conv_layers.3.conv.weight", "hubert") == "cnn.3.weight"
+        assert _map_key("hubert.feature_extractor.conv_layers.3.conv.weight", "hubert.") == "cnn.3.weight"
 
     def test_map_cnn_norm(self):
-        """CNN layer norm weight key maps correctly."""
+        """CNN layer norm weight key maps correctly (RVC-style hubert. prefix)."""
         from models._weight_loader import _map_key
-        assert _map_key("hubert.feature_extractor.conv_layers.0.layer_norm.weight", "hubert") == "cnn.0.norm.weight"
+        assert _map_key("hubert.feature_extractor.conv_layers.0.layer_norm.weight", "hubert.") == "cnn.0.norm.weight"
 
     def test_map_projection(self):
-        """Feature projection weight maps correctly."""
+        """Feature projection weight maps correctly (RVC-style hubert. prefix)."""
         from models._weight_loader import _map_key
-        assert _map_key("hubert.feature_projection.projection.weight", "hubert") == "proj.weight"
+        assert _map_key("hubert.feature_projection.projection.weight", "hubert.") == "proj.weight"
 
     def test_map_transformer_attention_q(self):
-        """Transformer layer attention q_proj maps correctly."""
+        """Transformer layer attention q_proj maps correctly (RVC-style hubert. prefix)."""
         from models._weight_loader import _map_key
-        assert _map_key("hubert.encoder.layers.5.attention.q_proj.weight", "hubert") == "blocks.5.attn.q.weight"
+        assert _map_key("hubert.encoder.layers.5.attention.q_proj.weight", "hubert.") == "blocks.5.attn.q.weight"
 
     def test_map_transformer_ffn(self):
-        """Transformer layer FFN maps correctly."""
+        """Transformer layer FFN maps correctly (RVC-style hubert. prefix)."""
         from models._weight_loader import _map_key
-        assert _map_key("hubert.encoder.layers.0.feed_forward.intermediate_dense.weight", "hubert") == "blocks.0.ffn.fc1.weight"
+        assert _map_key("hubert.encoder.layers.0.feed_forward.intermediate_dense.weight", "hubert.") == "blocks.0.ffn.fc1.weight"
 
     def test_map_unknown_key_returns_none(self):
         """Unknown key returns None (will be skipped)."""
         from models._weight_loader import _map_key
-        assert _map_key("some.unknown.weight", "hubert") is None
+        assert _map_key("some.unknown.weight", "hubert.") is None
 
     def test_map_contentvec_prefix(self):
-        """ContentVec uses 'model' prefix — maps same way."""
+        """ContentVec uses 'model.' prefix — maps same way."""
         from models._weight_loader import _map_key
-        assert _map_key("model.feature_extractor.conv_layers.0.conv.weight", "model") == "cnn.0.weight"
+        assert _map_key("model.feature_extractor.conv_layers.0.conv.weight", "model.") == "cnn.0.weight"
 
     def test_load_from_dict(self):
         """load_weights_from_dict maps a synthetic weight dict correctly."""
@@ -384,7 +384,7 @@ class TestTransformerBlock:
         assert out_arr.shape == (1, 49, 768), f"Expected (1,49,768) got {out_arr.shape}"
 
     def test_residual_applied(self, cpu_device):
-        """With zero weights, block should return input (residual only path)."""
+        """With zero projection weights, block output is layer-normed input (post-norm arch)."""
         import numpy as np
         from max import engine
         from max.graph import Graph, TensorType, DeviceRef, Dim
@@ -392,8 +392,10 @@ class TestTransformerBlock:
         from models.audio_encoder import _transformer_block_ops
 
         cpu_ref = DeviceRef.CPU()
-        # Zero out all projection weights — attention and FFN produce zeros
-        # Residual connections should preserve the input
+        # Zero out all projection weights — attention and FFN produce zeros.
+        # HuBERT uses post-norm: x -> attn(x) -> x+attn_out -> norm1 -> ffn -> x+ffn_out -> norm2.
+        # With zero projection weights: attn_out=0, ffn_out=0.
+        # So output = norm2(norm1(x + 0) + 0) = norm2(norm1(x)).
         block_w = self._make_random_block_weights()
         for k in block_w:
             if "weight" in k and "norm" not in k:
@@ -412,10 +414,13 @@ class TestTransformerBlock:
         result = model.execute(inp)
         tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
         out_arr = tensor.to_numpy()
-        # With zero weights, attention output = 0 and FFN output = 0
-        # x + 0 + 0 = x (residual connections preserve input)
-        diff = np.abs(out_arr - inp).max()
-        assert diff < 0.01, f"Zero weights: expected output ≈ input, got max diff {diff:.4f}"
+        # With zero weights: output is double-normalized input (norm2(norm1(x))).
+        # The output should NOT be identical to input (unless input is already normalized),
+        # but it should be finite and valid.
+        assert not np.isnan(out_arr).any(), "Output contains NaN"
+        assert not np.isinf(out_arr).any(), "Output contains Inf"
+        # After layer norm, values should be roughly zero-mean, unit-variance
+        assert out_arr.std() > 0.5, f"Output std too small: {out_arr.std()}"
 
     def test_output_not_nan(self, cpu_device):
         """Block output must not contain NaN or Inf."""
@@ -460,13 +465,17 @@ class TestAudioEncoderShapes:
             w[f"cnn.{i}.norm.weight"] = np.ones(c_out, dtype=np.float32)
             w[f"cnn.{i}.norm.bias"] = np.zeros(c_out, dtype=np.float32)
         # Feature projection: [out, in] PyTorch
+        # LayerNorm is applied to the 512-dim CNN output BEFORE projection (matches HuBERT)
         w["proj.weight"] = np.random.randn(768, 512).astype(np.float32) * 0.02
         w["proj.bias"] = np.zeros(768, dtype=np.float32)
-        w["proj.norm.weight"] = np.ones(768, dtype=np.float32)
-        w["proj.norm.bias"] = np.zeros(768, dtype=np.float32)
+        w["proj.norm.weight"] = np.ones(512, dtype=np.float32)
+        w["proj.norm.bias"] = np.zeros(512, dtype=np.float32)
         # Position conv: [C_out=768, C_in/groups=48, K=128]
         w["pos_conv.weight"] = np.random.randn(768, 48, 128).astype(np.float32) * 0.02
         w["pos_conv.bias"] = np.zeros(768, dtype=np.float32)
+        # Encoder layer norm (after pos_conv, before transformer blocks)
+        w["enc_norm.weight"] = np.ones(768, dtype=np.float32)
+        w["enc_norm.bias"] = np.zeros(768, dtype=np.float32)
         # 12 transformer blocks
         for i in range(12):
             for name in ["norm1", "norm2"]:
@@ -511,3 +520,50 @@ class TestAudioEncoderShapes:
         out = model.encode(audio)
         assert not np.isnan(out).any()
         assert not np.isinf(out).any()
+
+
+@pytest.mark.slow
+class TestAudioEncoderCorrectness:
+    """Integration test: MAX output vs PyTorch HuBERT.
+
+    Downloads facebook/hubert-base-ls960 (~360MB) on first run.
+    Skipped by default — run with: pixi run test-models-full
+    """
+
+    MODEL_ID = "facebook/hubert-base-ls960"
+
+    def _get_pytorch_output(self, audio_np):
+        """Get reference output from PyTorch HuBERT."""
+        import torch
+        from transformers import HubertModel
+        pt_model = HubertModel.from_pretrained(self.MODEL_ID).eval()
+        with torch.no_grad():
+            out = pt_model(torch.from_numpy(audio_np))
+        return out.last_hidden_state.numpy()
+
+    def test_output_matches_pytorch_cpu(self):
+        """MAX CPU output must match PyTorch within 1e-3 max absolute diff."""
+        import numpy as np
+        from models import AudioEncoder
+
+        rng = np.random.default_rng(42)
+        audio = rng.standard_normal((1, 16000)).astype(np.float32)
+
+        # PyTorch reference
+        pt_out = self._get_pytorch_output(audio)
+
+        # MAX CPU
+        max_model = AudioEncoder.from_pretrained(self.MODEL_ID, device="cpu")
+        max_out = max_model.encode(audio)
+
+        print(f"\n  PyTorch shape: {pt_out.shape}")
+        print(f"  MAX shape:     {max_out.shape}")
+        max_diff = np.abs(max_out - pt_out).max()
+        mean_diff = np.abs(max_out - pt_out).mean()
+        print(f"  Max diff:  {max_diff:.6f}")
+        print(f"  Mean diff: {mean_diff:.6f}")
+
+        assert max_out.shape == pt_out.shape, \
+            f"Shape mismatch: MAX {max_out.shape} vs PyTorch {pt_out.shape}"
+        assert max_diff < 1e-3, \
+            f"Max diff {max_diff:.4e} exceeds threshold 1e-3. Check weight loading and layer order."
