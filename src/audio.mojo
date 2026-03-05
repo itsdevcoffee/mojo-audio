@@ -3025,7 +3025,8 @@ fn stft(
         window_fn: "hann" or "hamming"
 
     Returns:
-        Spectrogram (n_fft/2+1, n_frames) in Float32
+        Spectrogram (n_frames, n_fft/2+1) in Float32 — outer index is frame,
+        inner index is frequency bin (0 to n_fft//2 inclusive).
 
     For 30s audio @ 16kHz: 3000 frames processed in parallel!
     """
@@ -3871,6 +3872,144 @@ fn apply_normalization(
 # Inverse STFT + Griffin-Lim (Waveform Reconstruction)
 # ==============================================================================
 
+
+fn _ifft_complex(spectrum: List[Complex]) raises -> List[Complex]:
+    """
+    Compute IFFT of a complex spectrum via the conjugate trick.
+
+    IFFT(X) = conj(FFT(conj(X))) / N
+
+    Args:
+        spectrum: Complex input (length must be power of 2).
+
+    Returns:
+        Complex IFFT output (same length as input).
+    """
+    var N = len(spectrum)
+    if N == 0:
+        return List[Complex]()
+
+    # Conjugate input
+    var conj_input = List[Complex]()
+    for i in range(N):
+        conj_input.append(Complex(spectrum[i].real, -spectrum[i].imag))
+
+    # FFT of conjugated input
+    var twiddles = precompute_twiddle_factors(N)
+    var fft_out = _fft_complex(conj_input, twiddles)
+
+    # Conjugate and scale by 1/N
+    var result = List[Complex]()
+    var scale = Float32(1.0) / Float32(N)
+    for i in range(N):
+        result.append(Complex(fft_out[i].real * scale, -fft_out[i].imag * scale))
+
+    return result^
+
+
+fn _irfft(spectrum: List[Complex], n: Int) raises -> List[Float32]:
+    """
+    Inverse real FFT: reconstruct a real-valued signal from rfft output.
+
+    Reconstructs the full conjugate-symmetric spectrum from the N/2+1 bins
+    produced by rfft(), then computes IFFT and returns the real part.
+
+    Args:
+        spectrum: Complex spectrum from rfft() — length n//2+1.
+        n: Desired output length (must be power of 2 for the internal IFFT).
+
+    Returns:
+        Real-valued time-domain signal, length n.
+    """
+    var n_bins = len(spectrum)
+    var full_size = n  # must be power of 2
+
+    # Build full conjugate-symmetric spectrum length=full_size
+    var full_spec = List[Complex]()
+    # DC bin
+    full_spec.append(Complex(spectrum[0].real, spectrum[0].imag))
+    # Positive frequencies
+    var pos_end = n_bins - 1  # index of Nyquist
+    for k in range(1, pos_end):
+        full_spec.append(Complex(spectrum[k].real, spectrum[k].imag))
+    # Nyquist bin
+    if n_bins > 1:
+        full_spec.append(Complex(spectrum[pos_end].real, spectrum[pos_end].imag))
+    # Negative frequencies (conjugate-symmetric mirror)
+    for k in range(pos_end - 1, 0, -1):
+        full_spec.append(Complex(spectrum[k].real, -spectrum[k].imag))
+
+    # Pad to full_size if needed
+    while len(full_spec) < full_size:
+        full_spec.append(Complex(0.0, 0.0))
+
+    # IFFT
+    var ifft_out = _ifft_complex(full_spec)
+
+    # Return real part
+    var result = List[Float32]()
+    for i in range(min(n, len(ifft_out))):
+        result.append(ifft_out[i].real)
+
+    return result^
+
+
+fn _stft_complex(
+    signal: List[Float32],
+    n_fft: Int,
+    hop_length: Int,
+    window_fn: String = "hann",
+) raises -> List[List[Complex]]:
+    """
+    Compute STFT and return complex spectra (magnitude + phase preserved).
+
+    Unlike stft() which discards phase by returning power spectra, this
+    function returns the raw complex values — essential for Griffin-Lim.
+
+    Args:
+        signal: Real-valued input audio.
+        n_fft: FFT size.
+        hop_length: Hop between frames.
+        window_fn: "hann" or "hamming".
+
+    Returns:
+        Complex spectrogram as List[List[Complex]], shape (n_frames, n_fft//2+1).
+    """
+    var window: List[Float32]
+    if window_fn == "hann":
+        window = hann_window(n_fft)
+    elif window_fn == "hamming":
+        window = hamming_window(n_fft)
+    else:
+        raise Error("Unknown window function: " + window_fn)
+
+    var fft_size = next_power_of_2(n_fft)
+    var twiddles = precompute_twiddle_factors(fft_size)
+
+    var num_frames = (len(signal) - n_fft) // hop_length + 1
+    if num_frames <= 0:
+        return List[List[Complex]]()
+
+    var result = List[List[Complex]]()
+
+    for frame_idx in range(num_frames):
+        var start = frame_idx * hop_length
+
+        # Extract windowed frame
+        var frame = List[Float32]()
+        for i in range(n_fft):
+            if start + i < len(signal):
+                frame.append(signal[start + i] * window[i])
+            else:
+                frame.append(0.0)
+
+        # Compute rfft (returns n_fft//2+1 complex bins)
+        var spectrum = rfft_true(frame, twiddles)
+        result.append(spectrum^)
+
+    return result^
+
+
 fn istft(
     stft_matrix: List[List[Float32]],
     hop_length: Int = 160,
@@ -3951,14 +4090,22 @@ fn griffin_lim(
     """
     Griffin-Lim algorithm: reconstruct audio from a magnitude spectrogram.
 
-    Iteratively estimates the STFT phase to produce a consistent waveform.
-    Useful when only magnitude (not complex phase) is available - e.g.
-    after mel spectrogram processing or neural network synthesis.
+    Uses proper iterative phase estimation with complex STFT internally.
+    Each iteration:
+      1. Compute complex STFT of current audio estimate.
+      2. Scale each complex bin to the target magnitude (keeping estimated phase).
+      3. Apply IFFT per frame and overlap-add to get updated audio estimate.
+
+    More iterations converge to a waveform whose magnitude STFT matches the
+    target magnitude spectrogram.
 
     Args:
         magnitude: Magnitude spectrogram as List[List[Float32]].
                    Shape: (n_frames, n_fft//2+1) - outer=frames, inner=bins.
-        n_iter: Griffin-Lim iterations. More = better quality (default 32).
+                   NOTE: The input magnitude values should be sqrt of the power
+                   values returned by stft() (i.e., sqrt of (re^2+im^2)/n_fft).
+        n_iter: Griffin-Lim iterations. More iterations improve quality
+                (default 32). Each iteration refines phase estimation.
         hop_length: Frame hop matching the original STFT.
         window_fn: Window function name matching the original STFT.
 
@@ -3970,31 +4117,81 @@ fn griffin_lim(
         return List[Float32]()
 
     var n_bins = len(magnitude[0])
+    var n_fft = (n_bins - 1) * 2
+    var fft_size = next_power_of_2(n_fft)
 
-    # Initial estimate: run iSTFT directly on magnitude values
+    # Get synthesis window
+    var win: List[Float32]
+    if window_fn == "hann":
+        win = hann_window(n_fft)
+    elif window_fn == "hamming":
+        win = hamming_window(n_fft)
+    else:
+        raise Error("Unknown window function: " + window_fn)
+
+    # Initial audio estimate: overlap-add with magnitude values directly
     var audio = istft(magnitude, hop_length, window_fn)
 
-    # Griffin-Lim iterations: project onto spectrogram constraints
-    for _iter in range(n_iter):
-        # Forward STFT on current estimate
-        var n_fft = (n_bins - 1) * 2
-        var current_stft = stft(audio, n_fft, hop_length, window_fn)
+    var n_samples_out = (n_frames - 1) * hop_length + n_fft
 
-        # Project: replace each bin value with the target magnitude,
-        # preserving the structural consistency from the current STFT.
-        var n_curr = len(current_stft)
+    # Griffin-Lim iterations: refine phase estimate
+    for _iter in range(n_iter):
+        # Step 1: Complex STFT of current audio estimate
+        var complex_spec = _stft_complex(audio, n_fft, hop_length, window_fn)
+
+        var n_curr = len(complex_spec)
+
+        # Step 2 & 3: For each frame, scale bins to target magnitude, then IFFT + OLA
+        var new_audio = List[Float32]()
+        var win_sum = List[Float32]()
+        for _ in range(n_samples_out):
+            new_audio.append(Float32(0.0))
+            win_sum.append(Float32(0.0))
+
         var n_use = n_curr
         if n_frames < n_curr:
             n_use = n_frames
 
         for f in range(n_use):
-            var n_b = len(current_stft[f])
+            var frame_bins = len(complex_spec[f])
+            var n_b = frame_bins
             if n_bins < n_b:
                 n_b = n_bins
-            for b in range(n_b):
-                current_stft[f][b] = magnitude[f][b]
 
-        # Inverse STFT back to audio for next iteration
-        audio = istft(current_stft, hop_length, window_fn)
+            # Build phase-corrected complex frame: target magnitude, estimated phase
+            var corrected = List[Complex]()
+            for b in range(n_b):
+                var re = complex_spec[f][b].real
+                var im = complex_spec[f][b].imag
+                var mag_est = sqrt(re * re + im * im)
+                var target_mag = magnitude[f][b]
+
+                if mag_est > Float32(1e-8):
+                    var scale = target_mag / mag_est
+                    corrected.append(Complex(re * scale, im * scale))
+                else:
+                    # No estimated phase — use zero (all real, cosine-like)
+                    corrected.append(Complex(target_mag, Float32(0.0)))
+
+            # Pad corrected to full frame_bins if needed
+            for b in range(n_b, frame_bins):
+                corrected.append(Complex(Float32(0.0), Float32(0.0)))
+
+            # IFFT to get time-domain frame
+            var time_frame = _irfft(corrected, fft_size)
+
+            # Overlap-add with window
+            var start = f * hop_length
+            for i in range(min(n_fft, len(time_frame))):
+                if start + i < n_samples_out:
+                    new_audio[start + i] += time_frame[i] * win[i]
+                    win_sum[start + i] += win[i] * win[i]
+
+        # Normalize by window overlap
+        for i in range(n_samples_out):
+            if win_sum[i] > Float32(1e-8):
+                new_audio[i] /= win_sum[i]
+
+        audio = new_audio^
 
     return audio^
