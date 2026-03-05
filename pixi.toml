@@ -99,6 +99,10 @@ env = { PYTHONNOUSERSITE = "1" }
 # PyTorch with CUDA 12.8 — linux-64 only (no macOS CUDA wheels exist).
 torch = { version = ">=2.5.0,<3", index = "https://download.pytorch.org/whl/cu128" }
 
+[target.linux-aarch64.pypi-dependencies]
+# PyTorch for ARM64 (DGX Spark / Grace Blackwell) — standard PyPI wheel includes CUDA.
+torch = ">=2.5.0,<3"
+
 # BLAS backend features - allows switching between MKL and OpenBLAS
 # Note: MKL is Linux-only, macOS uses OpenBLAS automatically
 [feature.mkl.target.linux-64.dependencies]
