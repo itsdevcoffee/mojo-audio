@@ -117,8 +117,105 @@ class AudioEncoder:
 
     @classmethod
     def _from_weights(cls, weights: dict, device: str = "auto") -> "AudioEncoder":
-        """Build MAX Graph from loaded weight dict. Implemented in Task 6."""
-        raise NotImplementedError("Implemented in Task 6")
+        """Build MAX Graph from loaded weight dict.
+
+        Args:
+            weights: Internal weight dict (from _weight_loader or _make_full_weights).
+            device: "auto", "gpu", or "cpu".
+
+        Returns:
+            AudioEncoder instance backed by a compiled MAX Graph model.
+        """
+        from max import engine
+        from max.driver import Accelerator, CPU, accelerator_count
+        from max.graph import Graph, TensorType, ops, DeviceRef, Dim
+        from max.dtype import DType
+        from ._feature_extractor import _pt_weight_to_max
+
+        # Device selection
+        use_gpu = accelerator_count() > 0 if device == "auto" else device == "gpu"
+        dev = Accelerator() if use_gpu else CPU()
+        device_ref = DeviceRef.GPU(0) if use_gpu else DeviceRef.CPU()
+
+        cnn_configs = [
+            (1, 512, 10, 5),
+            (512, 512, 3, 2),
+            (512, 512, 3, 2),
+            (512, 512, 3, 2),
+            (512, 512, 3, 2),
+            (512, 512, 2, 2),
+            (512, 512, 2, 2),
+        ]
+
+        def _const(arr):
+            return ops.constant(np.asarray(arr, dtype=np.float32), device=device_ref)
+
+        with Graph(
+            "audio_encoder",
+            input_types=[TensorType(DType.float32, [1, Dim("L"), 1, 1], device_ref)],
+        ) as g:
+            x = g.inputs[0]  # [1, L, 1, 1]
+
+            # Stage 1: CNN Feature Extractor (7 layers)
+            for i, (c_in, c_out, kernel, stride) in enumerate(cnn_configs):
+                w_max = _pt_weight_to_max(weights[f"cnn.{i}.weight"])
+                conv_out = ops.conv2d(x, _const(w_max), stride=(stride, 1))
+                conv_out = ops.reshape(conv_out, [1, -1, c_out])
+                conv_out = ops.layer_norm(
+                    conv_out,
+                    _const(weights[f"cnn.{i}.norm.weight"]),
+                    _const(weights[f"cnn.{i}.norm.bias"]),
+                    1e-5,
+                )
+                x = ops.reshape(ops.gelu(conv_out), [1, -1, 1, c_out])
+
+            x = ops.reshape(x, [1, -1, 512])  # [1, T, 512]
+
+            # Stage 2: Feature Projection Linear(512->768) + LayerNorm
+            x = ops.add(
+                ops.matmul(x, _const(weights["proj.weight"].T)),
+                _const(weights["proj.bias"]),
+            )
+            x = ops.layer_norm(
+                x,
+                _const(weights["proj.norm.weight"]),
+                _const(weights["proj.norm.bias"]),
+                1e-5,
+            )  # [1, T, 768]
+
+            # Stage 3: Convolutional Position Embeddings
+            # pos_conv PyTorch [C_out=768, C_in/groups=48, K=128]
+            # -> MAX RSCF [K=128, 1, C_in/groups=48, C_out=768]
+            pw = weights["pos_conv.weight"]
+            pw_max = np.transpose(pw, (2, 1, 0))[:, np.newaxis, :, :]  # [128, 1, 48, 768]
+            pos_x = ops.reshape(x, [1, -1, 1, 768])  # NHWC for conv2d
+            pos_out = ops.conv2d(
+                pos_x,
+                _const(pw_max),
+                stride=(1, 1),
+                padding=(63, 64, 0, 0),
+                groups=16,
+            )
+            pos_out = ops.reshape(pos_out, [1, -1, 768])
+            pos_out = ops.gelu(pos_out)
+            if "pos_conv.bias" in weights:
+                pos_out = ops.add(pos_out, _const(weights["pos_conv.bias"]))
+            x = ops.add(x, pos_out)  # [1, T, 768]
+
+            # Stage 4: 12x Transformer Encoder Blocks
+            for i in range(12):
+                block_w = {
+                    k[len(f"blocks.{i}."):]: weights[k]
+                    for k in weights
+                    if k.startswith(f"blocks.{i}.")
+                }
+                x = _transformer_block_ops(x, block_w, device_ref)
+
+            g.output(x)
+
+        session = engine.InferenceSession(devices=[dev])
+        model = session.load(g)
+        return cls(_model=model, _device=dev)
 
     @classmethod
     def from_pretrained(
@@ -134,7 +231,9 @@ class AudioEncoder:
             device: "auto" (default), "gpu", or "cpu".
             cache_dir: Override default cache (~/.cache/mojo-audio/models/).
         """
-        raise NotImplementedError("Implemented in Task 6")
+        from ._weight_loader import load_weights
+        weights = load_weights(model_id, cache_dir)
+        return cls._from_weights(weights, device=device)
 
     def encode(self, audio: np.ndarray) -> np.ndarray:
         """Encode raw audio waveform to feature vectors.
@@ -146,4 +245,17 @@ class AudioEncoder:
             Float32 numpy array, shape [1, time_frames, 768].
             For 1s audio: [1, 49, 768].
         """
-        raise NotImplementedError("Implemented in Task 6")
+        from max.driver import Accelerator, Tensor
+
+        # Reshape to [1, L, 1, 1] NHWC format required by CNN
+        audio_in = audio.reshape(1, -1, 1, 1).astype(np.float32)
+
+        # Transfer to GPU if needed
+        if isinstance(self._device, Accelerator):
+            inp = Tensor.from_numpy(audio_in).to(self._device)
+        else:
+            inp = audio_in
+
+        result = self._model.execute(inp)
+        tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
+        return tensor.to_numpy()

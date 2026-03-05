@@ -441,3 +441,73 @@ class TestTransformerBlock:
         out_arr = tensor.to_numpy()
         assert not np.isnan(out_arr).any()
         assert not np.isinf(out_arr).any()
+
+
+class TestAudioEncoderShapes:
+    """Test full AudioEncoder with random weights — no download required."""
+
+    def _make_full_weights(self):
+        """Generate a complete random weight dict matching HuBERT architecture."""
+        import numpy as np
+        w = {}
+        # CNN weights: PyTorch [C_out, C_in, K]
+        configs = [
+            (1,512,10),(512,512,3),(512,512,3),(512,512,3),
+            (512,512,3),(512,512,2),(512,512,2)
+        ]
+        for i, (c_in, c_out, k) in enumerate(configs):
+            w[f"cnn.{i}.weight"] = np.random.randn(c_out, c_in, k).astype(np.float32) * 0.02
+            w[f"cnn.{i}.norm.weight"] = np.ones(c_out, dtype=np.float32)
+            w[f"cnn.{i}.norm.bias"] = np.zeros(c_out, dtype=np.float32)
+        # Feature projection: [out, in] PyTorch
+        w["proj.weight"] = np.random.randn(768, 512).astype(np.float32) * 0.02
+        w["proj.bias"] = np.zeros(768, dtype=np.float32)
+        w["proj.norm.weight"] = np.ones(768, dtype=np.float32)
+        w["proj.norm.bias"] = np.zeros(768, dtype=np.float32)
+        # Position conv: [C_out=768, C_in/groups=48, K=128]
+        w["pos_conv.weight"] = np.random.randn(768, 48, 128).astype(np.float32) * 0.02
+        w["pos_conv.bias"] = np.zeros(768, dtype=np.float32)
+        # 12 transformer blocks
+        for i in range(12):
+            for name in ["norm1", "norm2"]:
+                w[f"blocks.{i}.{name}.weight"] = np.ones(768, dtype=np.float32)
+                w[f"blocks.{i}.{name}.bias"] = np.zeros(768, dtype=np.float32)
+            for proj in ["attn.q", "attn.k", "attn.v", "attn.out"]:
+                w[f"blocks.{i}.{proj}.weight"] = np.random.randn(768, 768).astype(np.float32) * 0.02
+                w[f"blocks.{i}.{proj}.bias"] = np.zeros(768, dtype=np.float32)
+            w[f"blocks.{i}.ffn.fc1.weight"] = np.random.randn(3072, 768).astype(np.float32) * 0.02
+            w[f"blocks.{i}.ffn.fc1.bias"] = np.zeros(3072, dtype=np.float32)
+            w[f"blocks.{i}.ffn.fc2.weight"] = np.random.randn(768, 3072).astype(np.float32) * 0.02
+            w[f"blocks.{i}.ffn.fc2.bias"] = np.zeros(768, dtype=np.float32)
+        return w
+
+    def test_encode_1s_shape(self):
+        """1s audio -> [1, 49, 768] on CPU."""
+        import numpy as np
+        from models.audio_encoder import AudioEncoder
+
+        model = AudioEncoder._from_weights(self._make_full_weights(), device="cpu")
+        audio = np.zeros((1, 16000), dtype=np.float32)
+        out = model.encode(audio)
+        assert out.shape == (1, 49, 768), f"Expected (1,49,768) got {out.shape}"
+
+    def test_encode_2s_shape(self):
+        """2s audio -> [1, 99, 768] on CPU."""
+        import numpy as np
+        from models.audio_encoder import AudioEncoder
+
+        model = AudioEncoder._from_weights(self._make_full_weights(), device="cpu")
+        audio = np.zeros((1, 32000), dtype=np.float32)
+        out = model.encode(audio)
+        assert out.shape == (1, 99, 768), f"Expected (1,99,768) got {out.shape}"
+
+    def test_encode_output_not_nan(self):
+        """Full encoder output must not contain NaN."""
+        import numpy as np
+        from models.audio_encoder import AudioEncoder
+
+        model = AudioEncoder._from_weights(self._make_full_weights(), device="cpu")
+        audio = np.random.randn(1, 16000).astype(np.float32) * 0.1
+        out = model.encode(audio)
+        assert not np.isnan(out).any()
+        assert not np.isinf(out).any()
