@@ -197,9 +197,9 @@ class AudioEncoder:
                 groups=16,
             )
             pos_out = ops.reshape(pos_out, [1, -1, 768])
-            pos_out = ops.gelu(pos_out)
             if "pos_conv.bias" in weights:
                 pos_out = ops.add(pos_out, _const(weights["pos_conv.bias"]))
+            pos_out = ops.gelu(pos_out)
             x = ops.add(x, pos_out)  # [1, T, 768]
 
             # Stage 4: 12x Transformer Encoder Blocks
