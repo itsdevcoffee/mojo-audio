@@ -1,7 +1,13 @@
+# Benchmark results (machine-specific, generated locally)
+experiments/contentvec-max/benchmark_results*.md
+experiments/contentvec-max/benchmark_results*.npz
+!experiments/contentvec-max/benchmark_results_spark.md
+
 # pixi environments
 .pixi/*
 !.pixi/config.toml
 __pycache__
+**/__pycache__/
 
 # Mojo compiler traces
 *.trace.json*
@@ -16,6 +22,7 @@ docs/tmp
 *.o
 test_*
 !tests/
+!tests/test_*.py
 
 # Release artifacts (uploaded to GitHub Releases, not committed)
 release/

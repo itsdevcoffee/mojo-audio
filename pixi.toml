@@ -37,6 +37,9 @@ demo = "mojo -I src examples/mel_demo.mojo"
 bench = "mojo -I src benchmarks/bench_mel_spectrogram.mojo"
 bench-optimized = "mojo -O3 -I src benchmarks/bench_mel_spectrogram.mojo"
 bench-python = "python benchmarks/compare_librosa.py"
+test-models = "pytest tests/test_audio_encoder.py -v -m 'not slow'"
+test-models-full = "pytest tests/test_audio_encoder.py -v -s"
+bench-models = "python experiments/contentvec-max/benchmark.py"
 
 # Development
 repl = "mojo"
@@ -83,6 +86,8 @@ onnx = ">=1.16.0,<2"
 onnxruntime = ">=1.20.0,<2"
 transformers = ">=4.45.0,<5"
 huggingface_hub = ">=0.25.0,<1.0"
+pytest = ">=8.0.0,<9"
+safetensors = ">=0.4.0,<1"
 
 [activation]
 # Prevent user site-packages (~/.local/lib/python3.13/) from leaking into pixi env.
@@ -93,6 +98,10 @@ env = { PYTHONNOUSERSITE = "1" }
 [target.linux-64.pypi-dependencies]
 # PyTorch with CUDA 12.8 — linux-64 only (no macOS CUDA wheels exist).
 torch = { version = ">=2.5.0,<3", index = "https://download.pytorch.org/whl/cu128" }
+
+[target.linux-aarch64.pypi-dependencies]
+# PyTorch for ARM64 (DGX Spark / Grace Blackwell) — standard PyPI wheel includes CUDA.
+torch = ">=2.5.0,<3"
 
 # BLAS backend features - allows switching between MKL and OpenBLAS
 # Note: MKL is Linux-only, macOS uses OpenBLAS automatically
