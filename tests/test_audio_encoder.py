@@ -162,3 +162,85 @@ class TestWeightLoader:
         result = load_weights_from_dict(fake_weights)
         assert len(result) == 1
         assert "proj.weight" in result
+
+
+class TestFeatureExtractor:
+    """Tests for CNN feature extractor — no model download required."""
+
+    def _make_random_weights(self):
+        """Random weights in PyTorch format [C_out, C_in, K]."""
+        import numpy as np
+        configs = [
+            (1, 512, 10), (512, 512, 3), (512, 512, 3), (512, 512, 3),
+            (512, 512, 3), (512, 512, 2), (512, 512, 2),
+        ]
+        w = {}
+        for i, (c_in, c_out, k) in enumerate(configs):
+            w[f"cnn.{i}.weight"] = np.random.randn(c_out, c_in, k).astype(np.float32)
+            w[f"cnn.{i}.norm.weight"] = np.ones(c_out, dtype=np.float32)
+            w[f"cnn.{i}.norm.bias"] = np.zeros(c_out, dtype=np.float32)
+        return w
+
+    def _result_to_numpy(self, result):
+        """Extract numpy array from model.execute() result (list or dict of MAX Tensors)."""
+        import numpy as np
+        v = list(result.values())[0] if isinstance(result, dict) else result[0]
+        return v.to_numpy() if hasattr(v, "to_numpy") else np.array(v)
+
+    def test_output_shape_1s(self, cpu_device):
+        """1s @16kHz -> [1, 49, 512]."""
+        import numpy as np
+        from max import engine
+        from max.graph import DeviceRef
+        from models._feature_extractor import build_feature_extractor_graph
+
+        cpu_ref = DeviceRef.CPU()
+        graph = build_feature_extractor_graph(self._make_random_weights(), cpu_ref)
+        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
+
+        audio = np.zeros((1, 16000, 1, 1), dtype=np.float32)
+        result = model.execute(audio)
+        out = self._result_to_numpy(result)
+        assert out.shape == (1, 49, 512), f"Expected (1,49,512) got {out.shape}"
+
+    def test_output_shape_2s(self, cpu_device):
+        """2s @16kHz -> [1, 99, 512]."""
+        import numpy as np
+        from max import engine
+        from max.graph import DeviceRef
+        from models._feature_extractor import build_feature_extractor_graph
+
+        cpu_ref = DeviceRef.CPU()
+        graph = build_feature_extractor_graph(self._make_random_weights(), cpu_ref)
+        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
+
+        audio = np.zeros((1, 32000, 1, 1), dtype=np.float32)
+        result = model.execute(audio)
+        out = self._result_to_numpy(result)
+        assert out.shape == (1, 99, 512), f"Expected (1,99,512) got {out.shape}"
+
+    def test_output_not_nan(self, cpu_device, audio_1s):
+        """Output must not contain NaN or Inf."""
+        import numpy as np
+        from max import engine
+        from max.graph import DeviceRef
+        from models._feature_extractor import build_feature_extractor_graph
+
+        cpu_ref = DeviceRef.CPU()
+        graph = build_feature_extractor_graph(self._make_random_weights(), cpu_ref)
+        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
+
+        audio_in = audio_1s.reshape(1, 16000, 1, 1)
+        result = model.execute(audio_in)
+        out = self._result_to_numpy(result)
+        assert not np.isnan(out).any(), "Output contains NaN"
+        assert not np.isinf(out).any(), "Output contains Inf"
+
+    def test_weight_transpose(self):
+        """PyTorch [C_out, C_in, K] must be transposed to MAX [K, 1, C_in, C_out]."""
+        import numpy as np
+        from models._feature_extractor import _pt_weight_to_max
+
+        pt_w = np.zeros((512, 1, 10), dtype=np.float32)  # [C_out, C_in, K]
+        max_w = _pt_weight_to_max(pt_w)
+        assert max_w.shape == (10, 1, 1, 512), f"Expected (10,1,1,512) got {max_w.shape}"
