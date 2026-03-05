@@ -11,6 +11,7 @@ description = "High-performance audio DSP library in Mojo - beats Python!"
 test-window = "mojo -I src tests/test_window.mojo"
 test-fft = "mojo -I src tests/test_fft.mojo"
 test-mel = "mojo -I src tests/test_mel.mojo"
+test-wav = "mojo -I src tests/test_wav_io.mojo"
 test = "mojo -I src tests/test_window.mojo && mojo -I src tests/test_fft.mojo && mojo -I src tests/test_mel.mojo"
 
 # Examples
