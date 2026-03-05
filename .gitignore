@@ -32,3 +32,6 @@ FIX_*.md
 
 experiments/hubert-max/*.onnx
 experiments/hubert-max/*.npz
+
+experiments/contentvec-max/benchmark_results*.md
+experiments/contentvec-max/benchmark_results*.npz
