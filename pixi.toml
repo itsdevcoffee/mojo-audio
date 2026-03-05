@@ -79,6 +79,10 @@ fastapi = ">=0.115.3"
 uvicorn = ">=0.27.0"
 pydantic = ">=2.5.3"
 python-multipart = ">=0.0.6"
+onnx = ">=1.16.0,<2"
+onnxruntime = ">=1.20.0,<2"
+transformers = ">=4.45.0,<5"
+huggingface_hub = ">=0.25.0,<1.0"
 
 # BLAS backend features - allows switching between MKL and OpenBLAS
 # Note: MKL is Linux-only, macOS uses OpenBLAS automatically
