@@ -1,6 +1,7 @@
 """Tests for WAV file I/O."""
 
 from wav_io import read_wav, write_wav
+from python import Python
 
 
 fn abs_f32(x: Float32) -> Float32:
@@ -69,7 +70,104 @@ fn test_clipping_on_write() raises:
     print("  Clipping handled correctly!")
 
 
+fn test_32bit_pcm_read() raises:
+    """Test reading 32-bit PCM WAV file."""
+    print("Testing 32-bit PCM read...")
+    # Write a 32-bit PCM WAV via Python
+    var wave = Python.import_module("wave")
+    var array_mod = Python.import_module("array")
+
+    # Write known samples as 32-bit PCM
+    var wf = wave.open("/tmp/test_32bit.wav", "wb")
+    wf.setnchannels(1)
+    wf.setsampwidth(4)
+    wf.setframerate(16000)
+    # Sample values: max positive, zero, max negative
+    var arr = array_mod.array("i", Python.evaluate("[2147483647, 0, -2147483648]"))
+    wf.writeframes(arr.tobytes())
+    wf.close()
+
+    # Read back with our function
+    var samples: List[Float32]
+    var sr: Int
+    var result = read_wav("/tmp/test_32bit.wav")
+    samples = result[0].copy()
+    sr = Int(result[1])
+
+    if sr != 16000:
+        raise Error("FAIL: sample rate " + String(sr))
+    if len(samples) != 3:
+        raise Error("FAIL: expected 3 samples, got " + String(len(samples)))
+    # Max positive should be ~1.0
+    if samples[0] < 0.99:
+        raise Error("FAIL: max positive sample " + String(samples[0]))
+    # Zero should be ~0.0
+    if abs_f32(samples[1]) > 0.001:
+        raise Error("FAIL: zero sample " + String(samples[1]))
+    # Max negative should be ~-1.0
+    if samples[2] > -0.99:
+        raise Error("FAIL: max negative sample " + String(samples[2]))
+    print("  ✓ 32-bit PCM read works correctly!")
+
+
+fn test_unsupported_format_raises() raises:
+    """read_wav must raise on unsupported sample width (e.g. 8-bit)."""
+    print("Testing unsupported format raises error...")
+    var wave = Python.import_module("wave")
+    var array_mod = Python.import_module("array")
+
+    # Write an 8-bit WAV (sample width = 1)
+    var wf = wave.open("/tmp/test_8bit.wav", "wb")
+    wf.setnchannels(1)
+    wf.setsampwidth(1)
+    wf.setframerate(16000)
+    var arr = array_mod.array("b", Python.evaluate("[0, 64, 127]"))
+    wf.writeframes(arr.tobytes())
+    wf.close()
+
+    # Expect read_wav to raise
+    var raised = False
+    try:
+        var _ = read_wav("/tmp/test_8bit.wav")
+    except:
+        raised = True
+
+    if not raised:
+        raise Error("FAIL: read_wav should raise for 8-bit WAV but did not")
+    print("  ✓ Unsupported format raises correctly!")
+
+
+fn test_stereo_mono_mixdown() raises:
+    """Stereo WAV should be mixed down to mono by averaging channels."""
+    print("Testing stereo mono mixdown...")
+    var wave = Python.import_module("wave")
+    var array_mod = Python.import_module("array")
+
+    # Write stereo WAV: left=16384 (0.5), right=0 → mono should be ~0.25
+    var wf = wave.open("/tmp/test_stereo.wav", "wb")
+    wf.setnchannels(2)
+    wf.setsampwidth(2)
+    wf.setframerate(16000)
+    # Interleaved: [left, right] = [16384, 0]
+    var arr = array_mod.array("h", Python.evaluate("[16384, 0]"))
+    wf.writeframes(arr.tobytes())
+    wf.close()
+
+    var result = read_wav("/tmp/test_stereo.wav")
+    var samples = result[0].copy()
+
+    if len(samples) != 1:
+        raise Error("FAIL: expected 1 mono sample, got " + String(len(samples)))
+    # 16384 / 32768.0 = 0.5, average with 0 = 0.25
+    assert_close(samples[0], 0.25, 0.002, "Stereo mixdown average")
+    print("  Sample value:", samples[0], "(expected ~0.25)")
+    print("  ✓ Stereo mixdown correct!")
+
+
 fn main() raises:
     test_write_and_read_roundtrip()
     test_clipping_on_write()
+    test_32bit_pcm_read()
+    test_unsupported_format_raises()
+    test_stereo_mono_mixdown()
     print("\n=== All WAV I/O tests passed! ===")
