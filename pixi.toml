@@ -84,6 +84,16 @@ onnxruntime = ">=1.20.0,<2"
 transformers = ">=4.45.0,<5"
 huggingface_hub = ">=0.25.0,<1.0"
 
+[activation]
+# Prevent user site-packages (~/.local/lib/python3.13/) from leaking into pixi env.
+# Needed because pixi uses Python 3.13 but system user site has huggingface_hub==1.2.3
+# which conflicts with transformers' requirement of huggingface-hub<1.0.
+env = { PYTHONNOUSERSITE = "1" }
+
+[target.linux-64.pypi-dependencies]
+# PyTorch with CUDA 12.8 — linux-64 only (no macOS CUDA wheels exist).
+torch = { version = ">=2.5.0,<3", index = "https://download.pytorch.org/whl/cu128" }
+
 # BLAS backend features - allows switching between MKL and OpenBLAS
 # Note: MKL is Linux-only, macOS uses OpenBLAS automatically
 [feature.mkl.target.linux-64.dependencies]
