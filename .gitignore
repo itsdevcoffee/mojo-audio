@@ -1,3 +1,8 @@
+# Benchmark results (machine-specific, generated locally)
+experiments/contentvec-max/benchmark_results*.md
+experiments/contentvec-max/benchmark_results*.npz
+!experiments/contentvec-max/benchmark_results_spark.md
+
 # pixi environments
 .pixi/*
 !.pixi/config.toml
