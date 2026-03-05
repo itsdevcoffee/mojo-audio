@@ -10,7 +10,7 @@ Common conversions for voice conversion pipeline:
   16000 -> 48000  (upsample converted output to DAW rate)
 """
 
-from math import sin
+from math import sin, floor
 from math.constants import pi
 
 
@@ -79,9 +79,12 @@ fn resample(
         var src_pos = Float32(i) / ratio
 
         # Kernel window in source space
-        var src_pos_int = Int(src_pos)
+        var src_pos_int = Int(floor(src_pos))
         var start = src_pos_int - a + 1
         var end = src_pos_int + a
+
+        # Anti-aliasing: scale kernel by cutoff when downsampling
+        var cutoff = ratio if ratio < 1.0 else Float32(1.0)
 
         var val = Float32(0.0)
         var weight_sum = Float32(0.0)
@@ -95,7 +98,7 @@ fn resample(
                 j_clamped = n_src - 1
 
             var kernel_x = src_pos - Float32(j)
-            var w = _lanczos_kernel(kernel_x, a)
+            var w = _lanczos_kernel(kernel_x * cutoff, a) * cutoff
             val += samples[j_clamped] * w
             weight_sum += w
 
