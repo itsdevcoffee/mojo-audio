@@ -33,43 +33,56 @@ _N_BLOCKS = 12
 # {i} = layer index
 _PATTERN_MAP = {
     # CNN feature extractor
-    "{p}.feature_extractor.conv_layers.{i}.conv.weight":       "cnn.{i}.weight",
-    "{p}.feature_extractor.conv_layers.{i}.conv.bias":         "cnn.{i}.bias",
-    "{p}.feature_extractor.conv_layers.{i}.layer_norm.weight": "cnn.{i}.norm.weight",
-    "{p}.feature_extractor.conv_layers.{i}.layer_norm.bias":   "cnn.{i}.norm.bias",
+    "{p}feature_extractor.conv_layers.{i}.conv.weight":       "cnn.{i}.weight",
+    "{p}feature_extractor.conv_layers.{i}.conv.bias":         "cnn.{i}.bias",
+    "{p}feature_extractor.conv_layers.{i}.layer_norm.weight": "cnn.{i}.norm.weight",
+    "{p}feature_extractor.conv_layers.{i}.layer_norm.bias":   "cnn.{i}.norm.bias",
     # Feature projection
-    "{p}.feature_projection.projection.weight": "proj.weight",
-    "{p}.feature_projection.projection.bias":   "proj.bias",
-    "{p}.feature_projection.layer_norm.weight": "proj.norm.weight",
-    "{p}.feature_projection.layer_norm.bias":   "proj.norm.bias",
+    "{p}feature_projection.projection.weight": "proj.weight",
+    "{p}feature_projection.projection.bias":   "proj.bias",
+    "{p}feature_projection.layer_norm.weight": "proj.norm.weight",
+    "{p}feature_projection.layer_norm.bias":   "proj.norm.bias",
     # Convolutional position embeddings
-    "{p}.encoder.pos_conv_embed.conv.weight": "pos_conv.weight",
-    "{p}.encoder.pos_conv_embed.conv.bias":   "pos_conv.bias",
+    # Standard weight (used by RVC-style checkpoints and some HF variants)
+    "{p}encoder.pos_conv_embed.conv.weight": "pos_conv.weight",
+    "{p}encoder.pos_conv_embed.conv.bias":   "pos_conv.bias",
+    # Weight-normalized form (standard HuggingFace facebook/hubert-base-ls960)
+    "{p}encoder.pos_conv_embed.conv.weight_g": "pos_conv.weight_g",
+    "{p}encoder.pos_conv_embed.conv.weight_v": "pos_conv.weight_v",
+    # Encoder layer norm (applied after pos_conv, before transformer blocks)
+    "{p}encoder.layer_norm.weight": "enc_norm.weight",
+    "{p}encoder.layer_norm.bias":   "enc_norm.bias",
     # Transformer block: pre-attention layernorm
-    "{p}.encoder.layers.{i}.layer_norm.weight": "blocks.{i}.norm1.weight",
-    "{p}.encoder.layers.{i}.layer_norm.bias":   "blocks.{i}.norm1.bias",
+    "{p}encoder.layers.{i}.layer_norm.weight": "blocks.{i}.norm1.weight",
+    "{p}encoder.layers.{i}.layer_norm.bias":   "blocks.{i}.norm1.bias",
     # Transformer block: attention
-    "{p}.encoder.layers.{i}.attention.q_proj.weight":   "blocks.{i}.attn.q.weight",
-    "{p}.encoder.layers.{i}.attention.q_proj.bias":     "blocks.{i}.attn.q.bias",
-    "{p}.encoder.layers.{i}.attention.k_proj.weight":   "blocks.{i}.attn.k.weight",
-    "{p}.encoder.layers.{i}.attention.k_proj.bias":     "blocks.{i}.attn.k.bias",
-    "{p}.encoder.layers.{i}.attention.v_proj.weight":   "blocks.{i}.attn.v.weight",
-    "{p}.encoder.layers.{i}.attention.v_proj.bias":     "blocks.{i}.attn.v.bias",
-    "{p}.encoder.layers.{i}.attention.out_proj.weight": "blocks.{i}.attn.out.weight",
-    "{p}.encoder.layers.{i}.attention.out_proj.bias":   "blocks.{i}.attn.out.bias",
+    "{p}encoder.layers.{i}.attention.q_proj.weight":   "blocks.{i}.attn.q.weight",
+    "{p}encoder.layers.{i}.attention.q_proj.bias":     "blocks.{i}.attn.q.bias",
+    "{p}encoder.layers.{i}.attention.k_proj.weight":   "blocks.{i}.attn.k.weight",
+    "{p}encoder.layers.{i}.attention.k_proj.bias":     "blocks.{i}.attn.k.bias",
+    "{p}encoder.layers.{i}.attention.v_proj.weight":   "blocks.{i}.attn.v.weight",
+    "{p}encoder.layers.{i}.attention.v_proj.bias":     "blocks.{i}.attn.v.bias",
+    "{p}encoder.layers.{i}.attention.out_proj.weight": "blocks.{i}.attn.out.weight",
+    "{p}encoder.layers.{i}.attention.out_proj.bias":   "blocks.{i}.attn.out.bias",
     # Transformer block: pre-FFN layernorm
-    "{p}.encoder.layers.{i}.final_layer_norm.weight": "blocks.{i}.norm2.weight",
-    "{p}.encoder.layers.{i}.final_layer_norm.bias":   "blocks.{i}.norm2.bias",
+    "{p}encoder.layers.{i}.final_layer_norm.weight": "blocks.{i}.norm2.weight",
+    "{p}encoder.layers.{i}.final_layer_norm.bias":   "blocks.{i}.norm2.bias",
     # Transformer block: FFN
-    "{p}.encoder.layers.{i}.feed_forward.intermediate_dense.weight": "blocks.{i}.ffn.fc1.weight",
-    "{p}.encoder.layers.{i}.feed_forward.intermediate_dense.bias":   "blocks.{i}.ffn.fc1.bias",
-    "{p}.encoder.layers.{i}.feed_forward.output_dense.weight": "blocks.{i}.ffn.fc2.weight",
-    "{p}.encoder.layers.{i}.feed_forward.output_dense.bias":   "blocks.{i}.ffn.fc2.bias",
+    "{p}encoder.layers.{i}.feed_forward.intermediate_dense.weight": "blocks.{i}.ffn.fc1.weight",
+    "{p}encoder.layers.{i}.feed_forward.intermediate_dense.bias":   "blocks.{i}.ffn.fc1.bias",
+    "{p}encoder.layers.{i}.feed_forward.output_dense.weight": "blocks.{i}.ffn.fc2.weight",
+    "{p}encoder.layers.{i}.feed_forward.output_dense.bias":   "blocks.{i}.ffn.fc2.bias",
 }
 
 
 def _build_key_map(prefix: str) -> dict[str, str]:
-    """Expand all pattern templates for the given prefix into a flat key map."""
+    """Expand all pattern templates for the given prefix into a flat key map.
+
+    prefix is the literal string to substitute for {p}, e.g.:
+      - "hubert." for RVC-style checkpoints
+      - "model."  for ContentVec checkpoints
+      - ""        for standard HuggingFace checkpoints (no wrapper prefix)
+    """
     result = {}
     for pattern_src, pattern_dst in _PATTERN_MAP.items():
         if "{i}" in pattern_src:
@@ -85,18 +98,26 @@ def _build_key_map(prefix: str) -> dict[str, str]:
 
 
 def _detect_prefix(keys: list[str]) -> str:
-    """Detect whether checkpoint uses 'hubert' or 'model' prefix.
+    """Detect checkpoint prefix style and return the prefix string for _build_key_map.
 
-    Raises ValueError if neither is found.
+    Returns:
+        - "hubert." for RVC-style checkpoints (keys start with "hubert.")
+        - "model."  for ContentVec checkpoints (keys start with "model.")
+        - ""        for standard HuggingFace checkpoints (keys start with "feature_extractor." etc.)
+
+    Raises ValueError if none of the known patterns match.
     """
     for key in keys:
         if key.startswith("hubert."):
-            return "hubert"
+            return "hubert."
         if key.startswith("model."):
-            return "model"
+            return "model."
+        # Standard HuggingFace format: keys begin directly with the module name
+        if key.startswith("feature_extractor.") or key.startswith("encoder.") or key.startswith("feature_projection."):
+            return ""
     raise ValueError(
         f"Cannot detect HuBERT/ContentVec prefix from keys. "
-        f"Expected keys starting with 'hubert.' or 'model.'. "
+        f"Expected keys starting with 'hubert.', 'model.', 'feature_extractor.', or 'encoder.'. "
         f"First keys: {keys[:3]}"
     )
 
@@ -112,6 +133,9 @@ def load_weights_from_dict(
     """Map a {hf_key: array} dict to {internal_key: float32_array}.
 
     Unknown keys are silently skipped.
+
+    Handles weight-normalized pos_conv: reconstructs pos_conv.weight from
+    pos_conv.weight_g and pos_conv.weight_v when the direct weight is absent.
     """
     prefix = _detect_prefix(list(weights.keys()))
     key_map = _build_key_map(prefix)
@@ -120,6 +144,18 @@ def load_weights_from_dict(
         dst_key = key_map.get(src_key)
         if dst_key is not None:
             result[dst_key] = np.asarray(array, dtype=np.float32)
+
+    # Reconstruct weight-normalized pos_conv weight if needed.
+    # Standard HuggingFace HuBERT checkpoints use nn.utils.weight_norm which stores
+    # weight_g [1,1,K] and weight_v [C_out, C_in/groups, K] instead of weight directly.
+    # Reconstruction: weight = weight_g * weight_v / norm(weight_v, dim=(0,1))
+    if "pos_conv.weight" not in result and "pos_conv.weight_g" in result and "pos_conv.weight_v" in result:
+        wg = result.pop("pos_conv.weight_g")
+        wv = result.pop("pos_conv.weight_v")
+        norm_v = np.sqrt((wv ** 2).sum(axis=(0, 1), keepdims=True))
+        norm_v = np.maximum(norm_v, 1e-12)  # avoid div by zero
+        result["pos_conv.weight"] = (wg * (wv / norm_v)).astype(np.float32)
+
     return result
 
 
