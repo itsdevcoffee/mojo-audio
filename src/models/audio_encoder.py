@@ -5,11 +5,6 @@ import numpy as np
 from pathlib import Path
 
 
-def _transformer_block_ops(x, block_weights: dict, device_ref, heads: int = 12, hidden: int = 768):
-    """Placeholder — implemented in Task 5."""
-    raise NotImplementedError("Implemented in Task 5")
-
-
 class AudioEncoder:
     """MAX Graph implementation of HuBERT / ContentVec audio encoder.
 
@@ -21,11 +16,9 @@ class AudioEncoder:
         features = model.encode(audio_np)  # [1, seq] -> [1, frames, 768]
     """
 
-    def __init__(self, _model, _device, _device_ref, _session):
+    def __init__(self, _model, _device):
         self._model = _model
         self._device = _device
-        self._device_ref = _device_ref
-        self._session = _session
 
     @classmethod
     def _from_weights(cls, weights: dict, device: str = "auto") -> "AudioEncoder":

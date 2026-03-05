@@ -6,6 +6,8 @@ Level 2 tests (download required): @pytest.mark.slow — skipped by default.
 
 import sys
 import os
+# sys.path.insert lets us import `src/models/` as `models` without pip install.
+# Use `from models import X` throughout these tests (not `from mojo_audio.models import X`).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
