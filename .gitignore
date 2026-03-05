@@ -28,3 +28,4 @@ release/
 REVISED_*.md
 SOLUTION_*.md
 FIX_*.md
+.worktrees/
