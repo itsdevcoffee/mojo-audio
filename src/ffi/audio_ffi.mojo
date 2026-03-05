@@ -16,7 +16,7 @@ Constraints (DO NOT VIOLATE):
   - MUST keep origin parameters on UnsafePointer types
 """
 
-from math import cos, sqrt, log, sin, exp
+from math import cos, sqrt, log, sin, exp, floor
 from math.constants import pi
 from memory import UnsafePointer
 from memory.unsafe_pointer import alloc
@@ -1228,3 +1228,292 @@ fn mojo_mel_spectrogram_get_data(
 fn mojo_mel_spectrogram_is_valid(handle: Int64) -> Int32:
     """Check if handle is valid (non-negative, not an error code)."""
     return 1 if handle > 0 else 0
+
+
+# ==============================================================================
+# INLINED RESAMPLER (from resample.mojo)
+# ==============================================================================
+# WARNING: CANNOT import from resample.mojo - crashes in shared lib context.
+# See docs/context/01-11-2026-mojo-ffi-constraints.md constraint #1.
+# ==============================================================================
+
+fn _sinc_ffi(x: Float32) -> Float32:
+    """Normalized sinc: sin(pi*x) / (pi*x), with sinc(0) = 1."""
+    if x == 0.0:
+        return 1.0
+    var px = pi * x
+    return sin(px) / px
+
+
+fn _lanczos_kernel_ffi(x: Float32, a: Int) -> Float32:
+    """Lanczos kernel of order a. Zero outside [-a, a]."""
+    var abs_x = x if x >= 0.0 else -x
+    if abs_x >= Float32(a):
+        return 0.0
+    return _sinc_ffi(x) * _sinc_ffi(x / Float32(a))
+
+
+fn resample_ffi(
+    samples: List[Float32],
+    src_rate: Int,
+    dst_rate: Int,
+    kernel_size: Int = 64,
+) raises -> List[Float32]:
+    """
+    Resample audio from src_rate to dst_rate using Lanczos interpolation.
+    Inlined from resample.mojo for FFI context.
+    """
+    if src_rate <= 0 or dst_rate <= 0:
+        raise Error("Sample rates must be positive")
+
+    var n_src = len(samples)
+
+    if src_rate == dst_rate:
+        var copy = List[Float32]()
+        for i in range(n_src):
+            copy.append(samples[i])
+        return copy^
+
+    var ratio = Float32(dst_rate) / Float32(src_rate)
+    var n_dst = Int(Float32(n_src) * ratio)
+
+    var result = List[Float32]()
+    for _ in range(n_dst):
+        result.append(0.0)
+
+    var a = kernel_size // 2
+
+    for i in range(n_dst):
+        var src_pos = Float32(i) / ratio
+        var src_pos_int = Int(floor(src_pos))
+        var start = src_pos_int - a + 1
+        var end = src_pos_int + a
+
+        var cutoff = ratio if ratio < 1.0 else Float32(1.0)
+
+        var val = Float32(0.0)
+        var weight_sum = Float32(0.0)
+
+        for j in range(start, end + 1):
+            var j_clamped = j
+            if j_clamped < 0:
+                j_clamped = 0
+            if j_clamped >= n_src:
+                j_clamped = n_src - 1
+
+            var kernel_x = src_pos - Float32(j)
+            var w = _lanczos_kernel_ffi(kernel_x * cutoff, a) * cutoff
+            val += samples[j_clamped] * w
+            weight_sum += w
+
+        if weight_sum != 0.0:
+            result[i] = val / weight_sum
+        else:
+            result[i] = 0.0
+
+    return result^
+
+
+# ==============================================================================
+# Resampler FFI Exports
+# ==============================================================================
+
+@export("mojo_resample", ABI="C")
+fn mojo_resample(
+    samples_ptr: UnsafePointer[mut=False, Float32, ImmutAnyOrigin],
+    n_samples: UInt64,
+    src_rate: Int32,
+    dst_rate: Int32,
+    out_len: UnsafePointer[mut=True, UInt64, MutAnyOrigin],
+) -> UnsafePointer[mut=True, Float32, MutAnyOrigin]:
+    """
+    Resample audio from src_rate to dst_rate.
+
+    Caller must call mojo_resample_free() on the returned pointer.
+    Returns null pointer (out_len=0) on error.
+    """
+    try:
+        var samples = List[Float32]()
+        for i in range(Int(n_samples)):
+            samples.append(samples_ptr[i])
+
+        var result = resample_ffi(samples, Int(src_rate), Int(dst_rate))
+        var n = len(result)
+        out_len[0] = UInt64(n)
+
+        var ptr = alloc[Float32](n)
+        for i in range(n):
+            ptr[i] = result[i]
+        return ptr
+    except:
+        out_len[0] = 0
+        return UnsafePointer[mut=True, Float32, MutAnyOrigin](unsafe_from_address=0)
+
+
+@export("mojo_resample_free", ABI="C")
+fn mojo_resample_free(ptr: UnsafePointer[mut=True, Float32, MutAnyOrigin]):
+    """Free memory returned by mojo_resample."""
+    if ptr:
+        ptr.free()
+
+
+# ==============================================================================
+# INLINED VAD (from vad.mojo)
+# ==============================================================================
+# WARNING: CANNOT import from vad.mojo - crashes in shared lib context.
+# See docs/context/01-11-2026-mojo-ffi-constraints.md constraint #1.
+# ==============================================================================
+
+fn compute_rms_frames_ffi(
+    samples: List[Float32],
+    frame_size: Int = 400,
+    hop_length: Int = 160,
+) raises -> List[Float32]:
+    """Compute RMS energy for each frame. Inlined from vad.mojo."""
+    if frame_size <= 0:
+        raise Error("frame_size must be positive")
+    if hop_length <= 0:
+        raise Error("hop_length must be positive")
+
+    var n = len(samples)
+    var rms = List[Float32]()
+
+    if n < frame_size:
+        return rms^
+
+    var n_frames = (n - frame_size) // hop_length + 1
+
+    for f in range(n_frames):
+        var start = f * hop_length
+        var end = start + frame_size
+
+        var sum_sq = Float32(0.0)
+        for i in range(start, end):
+            sum_sq += samples[i] * samples[i]
+        rms.append(sqrt(sum_sq / Float32(frame_size)))
+
+    return rms^
+
+
+fn frames_to_mask_ffi(
+    rms: List[Float32],
+    threshold: Float32 = 0.01,
+    min_silence_frames: Int = 5,
+) -> List[Bool]:
+    """Convert RMS energy frames to voice activity boolean mask. Inlined from vad.mojo."""
+    var n = len(rms)
+    var mask = List[Bool]()
+    for i in range(n):
+        mask.append(rms[i] >= threshold)
+
+    var i = 0
+    while i < n:
+        if not mask[i]:
+            var j = i
+            while j < n and not mask[j]:
+                j += 1
+            var silence_len = j - i
+            if silence_len < min_silence_frames:
+                for k in range(i, j):
+                    mask[k] = True
+            i = j
+        else:
+            i += 1
+
+    return mask^
+
+
+fn trim_silence_ffi(
+    samples: List[Float32],
+    sample_rate: Int = 16000,
+    threshold: Float32 = 0.01,
+    frame_size: Int = 400,
+    hop_length: Int = 160,
+    padding_ms: Int = 50,
+) raises -> List[Float32]:
+    """
+    Remove leading and trailing silence, keeping a short padding context.
+    Inlined from vad.mojo for FFI context.
+    """
+    var rms = compute_rms_frames_ffi(samples, frame_size, hop_length)
+    var mask = frames_to_mask_ffi(rms, threshold)
+
+    var n_frames = len(mask)
+    var first_voice = -1
+    var last_voice = -1
+
+    for i in range(n_frames):
+        if mask[i]:
+            if first_voice == -1:
+                first_voice = i
+            last_voice = i
+
+    if first_voice == -1:
+        return List[Float32]()
+
+    var padding_frames = (sample_rate * padding_ms // 1000) // hop_length
+
+    var start_frame = first_voice - padding_frames
+    if start_frame < 0:
+        start_frame = 0
+    var end_frame = last_voice + padding_frames + 1
+    if end_frame > n_frames:
+        end_frame = n_frames
+
+    var start_sample = start_frame * hop_length
+    var end_sample = end_frame * hop_length + frame_size
+    if end_sample > len(samples):
+        end_sample = len(samples)
+
+    var trimmed = List[Float32]()
+    for i in range(start_sample, end_sample):
+        trimmed.append(samples[i])
+
+    return trimmed^
+
+
+# ==============================================================================
+# VAD FFI Exports
+# ==============================================================================
+
+@export("mojo_trim_silence", ABI="C")
+fn mojo_trim_silence(
+    samples_ptr: UnsafePointer[mut=False, Float32, ImmutAnyOrigin],
+    n_samples: UInt64,
+    sample_rate: Int32,
+    threshold: Float32,
+    out_len: UnsafePointer[mut=True, UInt64, MutAnyOrigin],
+) -> UnsafePointer[mut=True, Float32, MutAnyOrigin]:
+    """
+    Trim leading and trailing silence from audio.
+
+    threshold: RMS energy threshold. 0.01 is a good default for normalized audio.
+    Caller must call mojo_trim_silence_free() on the returned pointer.
+    Returns null pointer (out_len=0) on error or all-silent input.
+    """
+    try:
+        var samples = List[Float32]()
+        for i in range(Int(n_samples)):
+            samples.append(samples_ptr[i])
+
+        var result = trim_silence_ffi(samples, Int(sample_rate), threshold)
+        var n = len(result)
+        out_len[0] = UInt64(n)
+
+        if n == 0:
+            return UnsafePointer[mut=True, Float32, MutAnyOrigin](unsafe_from_address=0)
+
+        var ptr = alloc[Float32](n)
+        for i in range(n):
+            ptr[i] = result[i]
+        return ptr
+    except:
+        out_len[0] = 0
+        return UnsafePointer[mut=True, Float32, MutAnyOrigin](unsafe_from_address=0)
+
+
+@export("mojo_trim_silence_free", ABI="C")
+fn mojo_trim_silence_free(ptr: UnsafePointer[mut=True, Float32, MutAnyOrigin]):
+    """Free memory returned by mojo_trim_silence."""
+    if ptr:
+        ptr.free()
