@@ -259,7 +259,7 @@ def _process_audio(wav_path: str) -> dict:
 from wav_io import read_wav
 from resample import resample_to_16k
 from vad import get_voice_segments
-from audio import mel_spectrogram
+from audio import mel_spectrogram, stft
 from math import sqrt
 
 fn main() raises:
@@ -326,6 +326,62 @@ fn main() raises:
     print(String(n_segs))
     for s in range(n_segs):
         print(String(segs[s][0]) + "," + String(segs[s][1]))
+
+    # 6. STFT magnitude (full resolution)
+    var n_fft = 400
+    var hop_length = 160
+    var stft_result = stft(samples_16k, n_fft, hop_length)
+    var stft_n_frames = len(stft_result)
+    var stft_n_freq_bins = len(stft_result[0]) if stft_n_frames > 0 else 0
+    print("STFT_SHAPE:" + String(stft_n_frames) + "," + String(stft_n_freq_bins))
+
+    # Print STFT data flattened (frame by frame, comma-separated per frame)
+    for frame_i in range(stft_n_frames):
+        var frame_parts = List[String]()
+        for bin_i in range(stft_n_freq_bins):
+            frame_parts.append(String(stft_result[frame_i][bin_i]))
+        var frame_line = String("")
+        for idx in range(len(frame_parts)):
+            if idx > 0:
+                frame_line += ","
+            frame_line += frame_parts[idx]
+        print(frame_line)
+
+    # 7. Per-frame RMS energy (same hop as STFT)
+    var rms_n_frames_16k = (len(samples_16k) - n_fft) // hop_length + 1
+    var rms_parts = List[String]()
+    for ri in range(rms_n_frames_16k):
+        var rms_start = ri * hop_length
+        var rms_sum_sq: Float64 = 0.0
+        for rj in range(n_fft):
+            if rms_start + rj < len(samples_16k):
+                var rv = Float64(samples_16k[rms_start + rj])
+                rms_sum_sq += rv * rv
+        var rms_val = sqrt(rms_sum_sq / Float64(n_fft))
+        rms_parts.append(String(Float32(rms_val)))
+    var rms_line = String("")
+    for idx in range(len(rms_parts)):
+        if idx > 0:
+            rms_line += ","
+        rms_line += rms_parts[idx]
+    print("RMS_DATA:" + rms_line)
+
+    # 8. Averaged power spectrum (average STFT frames)
+    var avg_ps = List[Float64]()
+    for bi in range(stft_n_freq_bins):
+        avg_ps.append(0.0)
+    for fi in range(stft_n_frames):
+        for bi in range(stft_n_freq_bins):
+            avg_ps[bi] = avg_ps[bi] + Float64(stft_result[fi][bi])
+    var ps_parts = List[String]()
+    for bi in range(stft_n_freq_bins):
+        ps_parts.append(String(Float32(avg_ps[bi] / Float64(stft_n_frames))))
+    var ps_line = String("")
+    for idx in range(len(ps_parts)):
+        if idx > 0:
+            ps_line += ","
+        ps_line += ps_parts[idx]
+    print("POWER_SPECTRUM:" + ps_line)
 """
 
     # Write temp Mojo script
@@ -392,6 +448,35 @@ fn main() raises:
                 "end": float(int(parts[1]) / sample_rate),
             })
 
+        # STFT magnitude
+        stft_shape = lines[line_idx].replace("STFT_SHAPE:", "").split(',')
+        line_idx += 1
+        stft_n_frames = int(stft_shape[0])
+        stft_n_freq_bins = int(stft_shape[1])
+
+        stft_np = np.zeros((stft_n_frames, stft_n_freq_bins), dtype=np.float32)
+        for fi in range(stft_n_frames):
+            stft_np[fi] = [float(v) for v in lines[line_idx].split(',')]
+            line_idx += 1
+        np.nan_to_num(stft_np, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # RMS energy (per-frame)
+        rms_line = ""
+        power_spectrum_line = ""
+        for remaining_line in lines[line_idx:]:
+            if remaining_line.startswith("RMS_DATA:"):
+                rms_line = remaining_line.replace("RMS_DATA:", "")
+            elif remaining_line.startswith("POWER_SPECTRUM:"):
+                power_spectrum_line = remaining_line.replace("POWER_SPECTRUM:", "")
+
+        rms_energy = [float(x) for x in rms_line.split(',') if x]
+        rms_np = np.array(rms_energy, dtype=np.float32)
+        np.nan_to_num(rms_np, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+
+        power_spectrum = [float(x) for x in power_spectrum_line.split(',') if x]
+        ps_np = np.array(power_spectrum, dtype=np.float32)
+        np.nan_to_num(ps_np, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+
         return {
             "duration_s": duration_s,
             "sample_rate": sample_rate,
@@ -400,6 +485,11 @@ fn main() raises:
             "mel_n_mels": n_mels,
             "mel_n_frames": n_frames,
             "vad_regions": vad_regions,
+            "stft_magnitude": stft_np.flatten().tolist(),
+            "stft_n_frames": stft_n_frames,
+            "stft_n_freq_bins": stft_n_freq_bins,
+            "rms_energy": rms_np.tolist(),
+            "power_spectrum": ps_np.tolist(),
         }
 
     finally:
