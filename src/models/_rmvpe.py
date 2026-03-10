@@ -263,7 +263,6 @@ def build_unet_graph(
         # x: [1, (T+PAD_T)//32, 4, 512]
 
         # --- Decoder: 5 levels ---
-        dec_channels = [512, 256, 128, 64, 32, 16]
         for L in range(5):
             # ConvTranspose2d (stride=2, kernel=3, padding=1, output_padding=1) via zero-interleave + conv
             # output shape: [1, 2H, 2W, up_co]

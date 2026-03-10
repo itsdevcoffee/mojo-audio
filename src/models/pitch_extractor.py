@@ -116,6 +116,14 @@ class PitchExtractor:
             filename: Weight file within the repo.
             device: "auto" (GPU if available), "gpu", or "cpu".
             cache_dir: Override download cache location.
+
+        Returns:
+            PitchExtractor backed by a compiled MAX Graph U-Net.
+
+        Note:
+            Unlike AudioEncoder.from_pretrained which takes a single model_id,
+            this method takes repo_id + filename separately because RMVPE has
+            a single known file within a multi-file HuggingFace repo.
         """
         from ._rmvpe_weight_loader import load_rmvpe_weights
         weights = load_rmvpe_weights(repo_id, filename, cache_dir)
