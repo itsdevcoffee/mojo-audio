@@ -265,8 +265,8 @@ def build_unet_graph(
         # --- Decoder: 5 levels ---
         dec_channels = [512, 256, 128, 64, 32, 16]
         for L in range(5):
-            # ConvTranspose2d (stride=2, kernel=3, padding=1) via zero-interleave + conv
-            # output shape: [1, 2H-1, 2W-1, up_co]
+            # ConvTranspose2d (stride=2, kernel=3, padding=1, output_padding=1) via zero-interleave + conv
+            # output shape: [1, 2H, 2W, up_co]
             up_w_pt = weights[f"dec.{L}.up.w"]  # PyTorch [C_in, C_out, kH, kW]
             up_b = weights.get(f"dec.{L}.up.b")
             x = _conv_transpose_2x(x, up_w_pt, up_b, device_ref)
