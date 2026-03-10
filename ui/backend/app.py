@@ -5,9 +5,12 @@ Provides endpoints for running Mojo and librosa benchmarks.
 """
 
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+import numpy as np
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,6 +31,11 @@ app.add_middleware(
 # Configuration
 REPO_ROOT = Path(__file__).parent.parent.parent
 UI_ROOT = Path(__file__).parent.parent
+
+# Add src/ to path for mojo_audio modules
+if str(REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+
 ALLOWED_BLAS_BACKENDS = frozenset(["mkl", "openblas"])
 BENCHMARK_TIMEOUT_SECONDS = 120
 
@@ -214,6 +222,86 @@ async def benchmark_both(config: BenchmarkConfig):
 async def health():
     """Health check endpoint."""
     return {"status": "healthy", "service": "mojo-audio benchmark API"}
+
+
+@app.post("/analyze")
+async def analyze_audio(file: UploadFile = File(...)):
+    """
+    Accept a WAV file, process via mojo-audio DSP, return visualization data.
+    """
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        content = await file.read()
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        return _process_audio(tmp_path)
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+def _process_audio(wav_path: str) -> dict:
+    """Process audio through mojo-audio DSP and return visualization data."""
+    from wav_io import read_wav
+    from resample import resample_to_16k
+    from vad import get_voice_segments
+    from audio import mel_spectrogram, hann_window
+
+    # 1. Load audio
+    samples, sample_rate = read_wav(wav_path)
+    samples_np = np.array(samples, dtype=np.float32)
+    duration_s = len(samples_np) / sample_rate
+
+    # 2. Waveform — downsample to ~4000 RMS envelope points
+    display_points = 4000
+    hop = max(1, len(samples_np) // display_points)
+    chunks = [samples_np[i:i+hop] for i in range(0, len(samples_np), hop)]
+    waveform_display = [float(np.sqrt(np.mean(c**2))) if len(c) > 0 else 0.0
+                        for c in chunks]
+
+    # 3. Resample to 16kHz for mel spectrogram
+    samples_16k_list = resample_to_16k(list(samples), sample_rate)
+    samples_16k = np.array(samples_16k_list, dtype=np.float32)
+
+    # 4. Mel spectrogram — 80 mel bands
+    n_fft = 400
+    hop_length = 160  # 10ms at 16kHz
+    mel_spec = mel_spectrogram(
+        list(samples_16k),
+        n_mels=80,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        sample_rate=16000,
+    )
+    mel_np = np.array([[v for v in row] for row in mel_spec], dtype=np.float32)
+    n_mels, n_frames = mel_np.shape
+
+    # Normalize to [0, 1] log scale
+    mel_log = np.log1p(mel_np)
+    mel_norm = (mel_log - mel_log.min()) / (mel_log.max() - mel_log.min() + 1e-8)
+
+    # 5. VAD regions
+    voice_segs = get_voice_segments(list(samples), sample_rate)
+    vad_regions = [
+        {"start": float(seg[0] / sample_rate), "end": float(seg[1] / sample_rate)}
+        for seg in voice_segs
+    ]
+
+    return {
+        "duration_s": float(duration_s),
+        "sample_rate": int(sample_rate),
+        "waveform": waveform_display,
+        "mel_spectrogram": mel_norm.flatten().tolist(),
+        "mel_n_mels": int(n_mels),
+        "mel_n_frames": int(n_frames),
+        "vad_regions": vad_regions,
+    }
+
+
+@app.get("/visualizer")
+async def visualizer_page():
+    """Serve the audio visualizer page."""
+    return FileResponse(str(UI_ROOT / "frontend" / "visualizer.html"))
 
 
 if __name__ == "__main__":
