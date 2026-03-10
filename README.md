@@ -1,453 +1,210 @@
-# mojo-audio 🎵⚡
+# mojo-audio
 
-> **High-performance audio DSP library in Mojo that BEATS Python!**
+High-performance audio DSP and ML inference library for voice conversion — built in Mojo and Python, runs on NVIDIA DGX Spark ARM64 with zero PyTorch CUDA dependency.
 
 [![Mojo](https://img.shields.io/badge/Mojo-0.26.1-orange?logo=fire)](https://docs.modular.com/mojo/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Performance](https://img.shields.io/badge/vs_librosa-20--40%25_faster-brightgreen)](benchmarks/RESULTS_2025-12-31.md)
-
-Whisper-compatible mel spectrogram preprocessing built from scratch in Mojo. **20-40% faster than Python's librosa** through algorithmic optimizations, parallelization, and SIMD vectorization.
-
-<div align="center">
-  <img src="docs/assets/mojo-audio-blog-4.png" alt="Performance Comparison" width="700"/>
-</div>
+[![Performance](https://img.shields.io/badge/vs_librosa-20--40%25_faster-brightgreen)](benchmarks/)
 
 ---
 
-## 🏆 **Performance**
+## What it is
 
-```
-30-second Whisper audio preprocessing:
+mojo-audio has two layers:
 
-librosa (Python):  15ms (1993x realtime)
-mojo-audio (Mojo): 12ms (2457x realtime) with -O3
+**DSP layer (Mojo)** — low-level audio processing: FFT, mel spectrogram, resampling, VAD, pitch shifting, iSTFT. 20–40% faster than librosa through SIMD vectorization and multi-core parallelization.
 
-RESULT: 20-40% FASTER THAN PYTHON! 🔥
-```
+**ML inference layer (Python + MAX Graph)** — GPU-accelerated neural network inference without PyTorch CUDA. Runs natively on DGX Spark SM_121 ARM64 via [MAX Engine](https://www.modular.com/max):
 
-**Optimization Journey:**
-- Started: 476ms (naive implementation)
-- Optimized: 12ms (with -O3 compiler flags)
-- **Total speedup: 40x!**
+| Model | Purpose | Backend |
+|-------|---------|---------|
+| `AudioEncoder` | HuBERT / ContentVec content features | MAX Graph GPU |
+| `PitchExtractor` | RMVPE pitch (F0) estimation | MAX Graph GPU + numpy BiGRU |
 
-<div align="center">
-  <img src="docs/assets/mojo-audio-diagram-5.jpeg" alt="24x Optimization Journey" width="800"/>
-</div>
-
-[See complete optimization journey →](docs/COMPLETE_VICTORY.md)
+Together these form the core of a voice conversion pipeline (content extraction → pitch extraction → synthesis) that runs fully on Spark without cloud or PyTorch.
 
 ---
 
-## ✨ **Features**
+## ML Inference
 
-### Complete Whisper Preprocessing Pipeline
+### AudioEncoder — HuBERT / ContentVec
 
-- **Window Functions**: Hann, Hamming (spectral leakage reduction)
-- **FFT Operations**: Radix-2/4 iterative FFT, True RFFT for real audio
-- **STFT**: Parallelized short-time Fourier transform across all CPU cores
-- **Mel Filterbank**: Sparse-optimized triangular filters (80 bands)
-- **Mel Spectrogram**: Complete end-to-end pipeline
+Extracts content feature vectors from raw audio. Supports `facebook/hubert-base-ls960` and `lengyue233/content-vec-best`. Automatically uses GPU if available.
 
-**One function call:**
-```mojo
-var mel = mel_spectrogram(audio)  // (80, 2998) in ~12ms!
+```python
+from models import AudioEncoder
+
+model = AudioEncoder.from_pretrained("facebook/hubert-base-ls960")
+features = model.encode(audio_np)  # [1, N] float32 @16kHz → [1, T, 768]
 ```
 
-### 9 Major Optimizations
+GPU pipeline: CNN feature extractor + positional conv (numpy, avoids MAX conv2d groups bug) + 12× transformer blocks.
 
-1. ✅ Iterative FFT (3x speedup)
-2. ✅ Pre-computed twiddle factors (1.7x)
-3. ✅ Sparse mel filterbank (1.24x)
-4. ✅ Twiddle caching across frames (2x!)
-5. ✅ Float32 precision (2x SIMD width)
-6. ✅ True RFFT algorithm (1.4x)
-7. ✅ Multi-core parallelization (1.3-1.7x)
-8. ✅ Radix-4 FFT (1.1-1.2x)
-9. ✅ Compiler optimization (-O3)
+### PitchExtractor — RMVPE
 
-**Combined: 40x faster than naive implementation!**
+Extracts F0 (fundamental frequency) per 10ms frame. No PyTorch CUDA needed — runs on DGX Spark ARM64.
 
----
+```python
+from models import PitchExtractor
 
-## 🚀 **Quick Start**
+model = PitchExtractor.from_pretrained()  # downloads lj1995/VoiceConversionWebUI/rmvpe.pt
+f0_hz = model.extract(audio_np)  # [1, N] float32 @16kHz → [T] float32 Hz, 0=unvoiced
+```
 
-### Installation
+Architecture: U-Net MAX Graph (5-level encoder + bottleneck + 5-level decoder) → numpy BiGRU → pitch salience bins → Hz per frame.
+
+### Running the models
 
 ```bash
-# Clone repository
-git clone https://github.com/itsdevcoffee/mojo-audio.git
-cd mojo-audio
+# Fast tests (no download)
+pixi run test-models
+pixi run test-pitch-extractor
 
-# Install dependencies (requires Mojo)
-pixi install
+# Full correctness tests (downloads model weights ~180–360MB)
+pixi run test-models-full
+pixi run test-pitch-extractor-full
 
-# Run tests
-pixi run test
-
-# Run optimized benchmark
-pixi run bench-optimized
+# GPU benchmark
+pixi run bench-models
 ```
 
-### Basic Usage
+---
+
+## DSP Layer
+
+### Mel Spectrogram (Mojo)
+
+Whisper-compatible mel spectrogram preprocessing — 20–40% faster than librosa.
 
 ```mojo
 from audio import mel_spectrogram
 
-fn main() raises:
-    # Load 30s audio @ 16kHz (480,000 samples)
-    var audio: List[Float32] = [...]  // Float32 for performance!
-
-    # Get Whisper-compatible mel spectrogram
-    var mel_spec = mel_spectrogram(audio)
-
-    // Output: (80, 2998) mel spectrogram
-    // Time: ~12ms with -O3
-    // Ready for Whisper model!
-}
+var mel = mel_spectrogram(audio)  // (80, 2998) for 30s @16kHz, ~12ms with -O3
 ```
 
-**Compile with optimization:**
+**Performance:**
+```
+30-second audio @16kHz:
+
+librosa (Python):   15ms  (1993x realtime)
+mojo-audio (-O3):   12ms  (2457x realtime)  ← 20–40% faster
+```
+
+Optimization journey: 476ms (naive) → 12ms (-O3) = **40x total speedup** through iterative FFT, RFFT, twiddle caching, sparse mel filterbank, SIMD float32, radix-4 butterflies, and multi-core parallelization.
+
+### Other DSP components
+
+| Module | What it does |
+|--------|-------------|
+| `resample.mojo` | Lanczos resampler (48kHz → 16kHz) |
+| `vad.mojo` | Voice activity detection / silence trimming |
+| `pitch.mojo` | Phase vocoder pitch shifting |
+| `wav_io.mojo` | WAV file I/O |
+| `ffi/` | C-compatible shared library (`libmojo_audio.so`) |
+
+### Running DSP tests
+
 ```bash
-mojo -O3 -I src your_code.mojo
+# All Mojo DSP tests
+pixi run test
+
+# Individual
+pixi run test-pitch
+pixi run bench-optimized   # mel spectrogram benchmark
+pixi run bench-python      # librosa baseline comparison
 ```
 
 ---
 
-## 🔨 **Building from Source**
+## Installation
 
-### Prerequisites
-
-- **Mojo**: Version 0.26+ (install via [Modular](https://docs.modular.com/mojo/manual/install/))
-- **pixi**: Package manager ([install pixi](https://pixi.sh))
-- **Platform**: Linux x86_64 or macOS (Apple Silicon/Intel)
-
-### Linux Build
+**Requirements:** [pixi](https://pixi.sh), Mojo 0.26+, Linux x86_64 or aarch64
 
 ```bash
-# Clone and setup
 git clone https://github.com/itsdevcoffee/mojo-audio.git
 cd mojo-audio
-
-# Install dependencies
 pixi install
-
-# Build FFI library (optional - for C/Rust/Python integration)
-pixi run build-ffi-optimized
-
-# Verify
-ls libmojo_audio.so  # Should show ~26KB shared library
 ```
 
-### macOS Build
-
-> **Note:** Due to Mojo API changes, macOS builds currently require specific setup. See our [macOS Build Guide](docs/guides/02-04-2026-macos-build-guide.md) for detailed instructions.
-
-**Quick build:**
+**Build FFI shared library** (for C/Rust/Python DSP integration):
 ```bash
-# Clone and setup
-git clone https://github.com/itsdevcoffee/mojo-audio.git
-cd mojo-audio
-
-# Install dependencies
-pixi install
-
-# Build FFI library (.dylib for macOS)
-pixi run build-ffi-optimized
-
-# Verify
-ls libmojo_audio.dylib  # Should show ~20-30KB shared library
+pixi run build-ffi-optimized   # → libmojo_audio.so (Linux) or .dylib (macOS)
 ```
 
-**Troubleshooting:** If you encounter build errors on macOS, please refer to the [detailed macOS build guide](docs/guides/02-04-2026-macos-build-guide.md) which includes solutions for common issues.
-
-### Building for Distribution
-
-For creating release binaries:
-- **Linux**: Use `pixi run build-ffi-optimized` (creates `libmojo_audio.so`)
-- **macOS**: Follow the [manual build guide](docs/guides/02-04-2026-macos-manual-build-v0.1.1.md)
+See [macOS Build Guide](docs/guides/02-04-2026-macos-build-guide.md) for macOS-specific setup.
 
 ---
 
-## 📊 **Benchmarks**
-
-### vs Competition
-
-| Implementation | Time (30s) | Throughput | Language | Our Result |
-|----------------|------------|------------|----------|------------|
-| **mojo-audio -O3** | **12ms** | **2457x** | **Mojo** | **🥇 Winner!** |
-| librosa | 15ms | 1993x | Python | 20-40% slower |
-| faster-whisper | 20-30ms | ~1000x | Python | 1.6-2.5x slower |
-| whisper.cpp | 50-100ms | ~300-600x | C++ | 4-8x slower |
-
-**mojo-audio is the FASTEST Whisper preprocessing library!**
-
-### Run Benchmarks Yourself
-
-```bash
-# Mojo (optimized)
-pixi run bench-optimized
-
-# Python baseline (requires librosa)
-pixi run bench-python
-
-# Standard (no compiler opts)
-pixi run bench
-```
-
-**Results:** Consistently 20-40% faster than librosa!
-
----
-
-## 🧪 **Examples**
-
-### Window Functions
-```bash
-pixi run demo-window
-```
-See Hann and Hamming windows in action.
-
-### FFT Operations
-```bash
-pixi run demo-fft
-```
-Demonstrates FFT, power spectrum, and STFT.
-
-### Complete Pipeline
-```bash
-pixi run demo-mel
-```
-Full mel spectrogram generation with explanations.
-
----
-
-## 📖 **API Reference**
-
-### Main Function
-
-```mojo
-mel_spectrogram(
-    audio: List[Float32],
-    sample_rate: Int = 16000,
-    n_fft: Int = 400,
-    hop_length: Int = 160,
-    n_mels: Int = 80
-) raises -> List[List[Float32]]
-```
-
-Complete Whisper preprocessing pipeline.
-
-**Returns:** Mel spectrogram (80, ~3000) for 30s audio
-
-### Core Functions
-
-```mojo
-// Window functions
-hann_window(size: Int) -> List[Float32]
-hamming_window(size: Int) -> List[Float32]
-apply_window(signal, window) -> List[Float32]
-
-// FFT operations
-fft(signal: List[Float32]) -> List[Complex]
-rfft(signal: List[Float32]) -> List[Complex]  // 2x faster for real audio!
-power_spectrum(fft_output) -> List[Float32]
-stft(signal, n_fft, hop_length, window_fn) -> List[List[Float32]]
-
-// Mel scale
-hz_to_mel(freq_hz: Float32) -> Float32
-mel_to_hz(freq_mel: Float32) -> Float32
-create_mel_filterbank(n_mels, n_fft, sample_rate) -> List[List[Float32]]
-
-// Normalization
-normalize_whisper(mel_spec) -> List[List[Float32]]  // Whisper-ready output
-normalize_minmax(mel_spec) -> List[List[Float32]]   // Scale to [0, 1]
-normalize_zscore(mel_spec) -> List[List[Float32]]   // Mean=0, std=1
-apply_normalization(mel_spec, norm_type) -> List[List[Float32]]
-```
-
----
-
-## 🔧 **Normalization**
-
-Different ML models expect different input ranges. mojo-audio supports multiple normalization methods:
-
-| Constant | Value | Formula | Output Range | Use Case |
-|----------|-------|---------|--------------|----------|
-| `NORM_NONE` | 0 | `log10(max(x, 1e-10))` | [-10, 0] | Raw output, custom processing |
-| `NORM_WHISPER` | 1 | `max-8` clamp, then `(x+4)/4` | ~[-1, 1] | **OpenAI Whisper models** |
-| `NORM_MINMAX` | 2 | `(x - min) / (max - min)` | [0, 1] | General ML |
-| `NORM_ZSCORE` | 3 | `(x - mean) / std` | ~[-3, 3] | Wav2Vec2, research |
-
-### Pure Mojo Usage
-
-```mojo
-from audio import mel_spectrogram, normalize_whisper, NORM_WHISPER
-
-// Option 1: Separate normalization
-var raw_mel = mel_spectrogram(audio)
-var whisper_mel = normalize_whisper(raw_mel)
-
-// Option 2: Using apply_normalization
-var normalized = apply_normalization(raw_mel, NORM_WHISPER)
-```
-
-### FFI Usage (C/Rust/Python)
-
-Set `normalization` in config to apply normalization in the pipeline:
-
-```c
-MojoMelConfig config;
-mojo_mel_config_default(&config);
-config.normalization = MOJO_NORM_WHISPER;  // Whisper-ready output
-
-// Compute returns normalized mel spectrogram
-MojoMelHandle handle = mojo_mel_spectrogram_compute(audio, num_samples, &config);
-```
-
-```rust
-let config = MojoMelConfig {
-    sample_rate: 16000,
-    n_fft: 400,
-    hop_length: 160,
-    n_mels: 128,  // Whisper large-v3
-    normalization: 1,  // MOJO_NORM_WHISPER
-};
-```
-
----
-
-## 🎯 **Whisper Compatibility**
-
-**Matches OpenAI Whisper requirements:**
-- ✅ Sample rate: 16kHz
-- ✅ FFT size: 400
-- ✅ Hop length: 160 (10ms frames)
-- ✅ Mel bands: 80 (v2) or 128 (v3)
-- ✅ Output shape: (n_mels, ~3000) for 30s
-
-### Mel Bins by Model Version
-
-| Whisper Model | n_mels | Constant |
-|---------------|--------|----------|
-| tiny, base, small, medium, large, large-v2 | 80 | `WHISPER_N_MELS` |
-| large-v3 | 128 | `WHISPER_N_MELS_V3` |
-
-```mojo
-// For large-v2 and earlier (default)
-var mel = mel_spectrogram(audio)  // n_mels=80
-
-// For large-v3
-var mel = mel_spectrogram(audio, n_mels=128)
-```
-
-**Validated against Whisper model expectations!**
-
----
-
-## 🔬 **Technical Details**
-
-### Optimization Techniques
-
-**Algorithmic:**
-- Iterative Cooley-Tukey FFT (cache-friendly)
-- Radix-4 butterflies for power-of-4 sizes
-- True RFFT with pack-FFT-unpack
-- Sparse matrix operations
-
-**Parallelization:**
-- Multi-core STFT frame processing
-- Thread-safe writes (each core handles different frames)
-- Scales linearly with CPU cores
-
-**SIMD Vectorization:**
-- Float32 for 16-element SIMD (vs 8 for Float64)
-- @parameter compile-time unrolling
-- Direct pointer loads where possible
-
-**Memory Optimization:**
-- Pre-computed twiddle factors
-- Cached coefficients across frames
-- Pre-allocated output buffers
-
----
-
-## 📚 **Documentation**
-
-- **[COMPLETE_VICTORY.md](docs/COMPLETE_VICTORY.md)** - How we beat Python (full story!)
-- **[Benchmark Results](benchmarks/RESULTS_2025-12-31.md)** - Timestamped performance data
-- **[Examples](examples/)** - Educational demos with explanations
-
----
-
-## 🧬 **Project Structure**
+## Project Structure
 
 ```
 mojo-audio/
 ├── src/
-│   └── audio.mojo              # Core library (1,200+ lines)
+│   ├── audio.mojo              # Mel spectrogram, FFT, STFT, windowing
+│   ├── pitch.mojo              # Phase vocoder pitch shifting
+│   ├── resample.mojo           # Lanczos resampler
+│   ├── vad.mojo                # Voice activity detection
+│   ├── wav_io.mojo             # WAV I/O
+│   ├── ffi/                    # C-compatible shared library exports
+│   └── models/                 # MAX Graph ML inference (Python)
+│       ├── audio_encoder.py    # HuBERT / ContentVec via MAX Graph
+│       ├── pitch_extractor.py  # RMVPE pitch extraction via MAX Graph
+│       ├── _rmvpe.py           # U-Net graph + numpy BiGRU
+│       ├── _rmvpe_weight_loader.py
+│       └── _weight_loader.py   # HuBERT/ContentVec weight loader
 ├── tests/
-│   ├── test_window.mojo        # Window function tests
-│   ├── test_fft.mojo           # FFT operation tests
-│   └── test_mel.mojo           # Mel filterbank tests
-├── examples/
-│   ├── window_demo.mojo
-│   ├── fft_demo.mojo
-│   └── mel_demo.mojo
-├── benchmarks/
-│   ├── bench_mel_spectrogram.mojo  # Mojo benchmarks
-│   ├── compare_librosa.py          # Python baseline
-│   └── RESULTS_2025-12-31.md       # Historical data
+│   ├── test_audio_encoder.py   # AudioEncoder tests (pytest)
+│   ├── test_pitch_extractor.py # PitchExtractor tests (pytest)
+│   ├── test_fft.mojo           # FFT correctness
+│   ├── test_mel.mojo           # Mel spectrogram
+│   └── ...                     # Other Mojo DSP tests
+├── experiments/
+│   ├── hubert-max/             # HuBERT MAX Graph experiments
+│   ├── contentvec-max/         # ContentVec benchmarks
+│   └── max-bug-repro/          # MAX Engine bug reproductions
 ├── docs/
-│   └── COMPLETE_VICTORY.md     # Optimization story
-└── pixi.toml                   # Dependencies & tasks
+│   ├── plans/                  # Implementation plans
+│   ├── context/                # Architecture reference
+│   └── project/                # Roadmap
+└── pixi.toml
 ```
 
 ---
 
-## 🎓 **Why mojo-audio?**
+## Platform Support
 
-### Built from Scratch
-- Understand every line of code
-- No black-box dependencies
-- Educational value
-
-### Proven Performance
-- Beats Python's librosa
-- Faster than C++ alternatives
-- Production-ready
-
-### Mojo Showcase
-- Demonstrates Mojo's capabilities
-- Combines Python ergonomics with C performance
-- SIMD, parallelization, optimization techniques
-
-### Ready for Production
-- All tests passing (17 tests)
-- Whisper-compatible output
-- Well-documented
-- Actively optimized
+| Platform | DSP | ML Inference |
+|----------|-----|-------------|
+| Linux x86_64 (NVIDIA RTX) | ✅ | ✅ GPU |
+| Linux aarch64 (DGX Spark SM_121) | ✅ | ✅ GPU |
+| macOS Apple Silicon | ✅ | ✅ CPU |
+| macOS Intel | ✅ | ✅ CPU |
 
 ---
 
-## 🤝 **Contributing**
+## Roadmap
 
-Contributions welcome! Areas where help is appreciated:
+The next steps are tracked in [docs/project/03-06-2026-roadmap.md](docs/project/03-06-2026-roadmap.md):
 
-- Further optimizations (see potential in docs)
-- Additional features (MFCC, CQT, etc.)
-- Platform-specific tuning (ARM, x86)
-- Documentation improvements
-- Bug fixes and testing
+- **Sprint 2:** Full GPU AudioEncoder (remove numpy bridge once MAX conv2d groups bug is fixed), phase-locked phase vocoder
+- **Sprint 3:** HiFiGAN vocoder in MAX Graph
+- **Sprint 4:** Full VITS synthesis — end-to-end voice conversion on Spark
+- **Sprint 5:** Shade integration and demo
 
 ---
 
-## 📝 **Citation**
+## Known Issues
 
-If you use mojo-audio in your research or project:
+**MAX Engine conv2d groups bug (v26.1):** `ops.conv2d` returns incorrect results when `groups > 1` and kernel size is large (K≥128). Filed as [modular/modular#6129](https://github.com/modular/modular/issues/6129). Workaround: HuBERT's `pos_conv` layer runs outside the MAX Graph via numpy.
+
+---
+
+## Citation
 
 ```bibtex
 @software{mojo_audio_2026,
   author = {Dev Coffee},
-  title = {mojo-audio: High-performance audio DSP in Mojo},
+  title = {mojo-audio: Audio DSP and ML inference for voice conversion},
   year = {2026},
   url = {https://github.com/itsdevcoffee/mojo-audio}
 }
@@ -455,24 +212,4 @@ If you use mojo-audio in your research or project:
 
 ---
 
-## 🔗 **Related Projects**
-
-- **[Visage ML](https://github.com/itsdevcoffee/mojo-visage)** - Neural network library in Mojo
-- **[Mojo](https://www.modular.com/mojo)** - The Mojo programming language
-- **[MAX Engine](https://www.modular.com/max)** - Modular's AI engine
-
----
-
-## 🏅 **Achievements**
-
-- 🏆 **Beats librosa** (Python's standard audio library)
-- 🚀 **40x speedup** from naive to optimized
-- ⚡ **~2500x realtime** throughput
-- ✅ **All from scratch** in Mojo
-- 🎓 **Complete learning resource**
-
----
-
-**Built with Mojo 🔥 | Faster than Python | Production-Ready**
-
-**[GitHub](https://github.com/itsdevcoffee/mojo-audio)** | **[Issues](https://github.com/itsdevcoffee/mojo-audio/issues)** | **[Discussions](https://github.com/itsdevcoffee/mojo-audio/discussions)**
+**[GitHub](https://github.com/itsdevcoffee/mojo-audio)** | **[Issues](https://github.com/itsdevcoffee/mojo-audio/issues)** | **[Roadmap](docs/project/03-06-2026-roadmap.md)**
