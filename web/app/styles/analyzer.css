@@ -1,0 +1,45 @@
+/* Waveform panel */
+.waveform-panel {
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.waveform-panel__header {
+  padding: 7px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.waveform-panel__legend {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.waveform-panel__vad-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(0, 220, 120, 0.5);
+}
+
+.waveform-panel__canvas {
+  display: block;
+  padding: 4px 14px;
+}
+
+/* Visualization content area (inside glass panel below tabs) */
+.viz-content__header {
+  padding: 6px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.viz-content__canvas {
+  display: block;
+  margin: 0 14px 14px;
+  border-radius: 4px;
+}
