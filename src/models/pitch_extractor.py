@@ -77,7 +77,17 @@ class PitchExtractor:
 
     @classmethod
     def _from_weights(cls, weights: dict, device: str = "auto") -> "PitchExtractor":
-        """Build from internal weight dict (for testing with random weights)."""
+        """Build MAX Graph model from internal weight dict.
+
+        Args:
+            weights: Internal weight dict from _rmvpe_weight_loader.load_rmvpe_weights().
+                     Must include U-Net conv/BN weights, GRU weights (gru.*), and
+                     linear output weights (linear.*).
+            device: "auto" (GPU if available), "gpu", or "cpu".
+
+        Returns:
+            PitchExtractor backed by a compiled MAX Graph U-Net.
+        """
         from max import engine
         from max.driver import Accelerator, CPU, accelerator_count
         from max.graph import DeviceRef
