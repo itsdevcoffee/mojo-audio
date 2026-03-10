@@ -398,3 +398,118 @@ class TestPitchPostProcessing:
         x = rng.standard_normal((1, 50, 512)).astype(np.float32)
         out = linear_output(x, weights)
         assert out.shape == (1, 50, 360), f"Expected (1,50,360) got {out.shape}"
+
+
+class TestMelSpectrogram:
+    """Mel spectrogram preprocessing — no download required."""
+
+    def test_output_shape_1s(self):
+        """1s @16kHz → [1, 1, ~100, 128]."""
+        from models.pitch_extractor import _mel_spectrogram
+        audio = np.zeros((1, 16000), dtype=np.float32)
+        mel = _mel_spectrogram(audio)
+        assert mel.ndim == 4
+        assert mel.shape[0] == 1 and mel.shape[1] == 1 and mel.shape[3] == 128
+        assert 95 <= mel.shape[2] <= 105, f"Unexpected T: {mel.shape[2]}"
+
+    def test_output_dtype(self):
+        from models.pitch_extractor import _mel_spectrogram
+        audio = np.zeros((1, 16000), dtype=np.float32)
+        assert _mel_spectrogram(audio).dtype == np.float32
+
+    def test_output_not_nan(self):
+        from models.pitch_extractor import _mel_spectrogram
+        audio = np.random.default_rng(0).standard_normal((1, 16000)).astype(np.float32) * 0.1
+        mel = _mel_spectrogram(audio)
+        assert not np.isnan(mel).any() and not np.isinf(mel).any()
+
+    def test_output_shape_2s(self):
+        """2s @16kHz → [1, 1, ~200, 128]."""
+        from models.pitch_extractor import _mel_spectrogram
+        audio = np.zeros((1, 32000), dtype=np.float32)
+        mel = _mel_spectrogram(audio)
+        assert 195 <= mel.shape[2] <= 205, f"Unexpected T: {mel.shape[2]}"
+
+
+class TestPitchExtractorShapes:
+    """PitchExtractor with random weights — no download required."""
+
+    def _make_weights(self):
+        """Full weight dict: U-Net + BiGRU + linear output."""
+        rng = np.random.default_rng(99)
+        w = TestUNetGraph()._make_full_random_weights()
+        # Add BiGRU weights (hidden=256, input_size=384)
+        H, I = 256, 384
+        gate = 3 * H
+        for suffix, shape in [
+            ("weight_ih_l0", (gate, I)),
+            ("weight_hh_l0", (gate, H)),
+            ("bias_ih_l0", (gate,)),
+            ("bias_hh_l0", (gate,)),
+            ("weight_ih_l0_reverse", (gate, I)),
+            ("weight_hh_l0_reverse", (gate, H)),
+            ("bias_ih_l0_reverse", (gate,)),
+            ("bias_hh_l0_reverse", (gate,)),
+        ]:
+            w[f"gru.{suffix}"] = rng.standard_normal(shape).astype(np.float32) * 0.01
+        # Add linear output weights
+        w["linear.weight"] = rng.standard_normal((360, 512)).astype(np.float32) * 0.01
+        w["linear.bias"] = np.zeros(360, dtype=np.float32)
+        return w
+
+    def test_from_weights_builds(self):
+        from models.pitch_extractor import PitchExtractor
+        model = PitchExtractor._from_weights(self._make_weights(), device="cpu")
+        assert model is not None
+
+    def test_extract_1s_shape(self):
+        """1s audio → [T_frames] Hz, T ≈ 100."""
+        from models.pitch_extractor import PitchExtractor
+        model = PitchExtractor._from_weights(self._make_weights(), device="cpu")
+        audio = np.zeros((1, 16000), dtype=np.float32)
+        f0 = model.extract(audio)
+        assert f0.ndim == 1
+        assert 95 <= len(f0) <= 105, f"Expected ~100 frames, got {len(f0)}"
+        assert f0.dtype == np.float32
+
+    def test_extract_not_nan(self):
+        from models.pitch_extractor import PitchExtractor
+        model = PitchExtractor._from_weights(self._make_weights(), device="cpu")
+        audio = np.random.default_rng(1).standard_normal((1, 16000)).astype(np.float32) * 0.1
+        f0 = model.extract(audio)
+        assert not np.isnan(f0).any()
+
+    def test_extract_returns_float32(self):
+        from models.pitch_extractor import PitchExtractor
+        model = PitchExtractor._from_weights(self._make_weights(), device="cpu")
+        f0 = model.extract(np.zeros((1, 16000), dtype=np.float32))
+        assert f0.dtype == np.float32
+
+
+@pytest.mark.slow
+class TestPitchExtractorCorrectness:
+    """Integration test: compare vs Applio RMVPE on 440 Hz sine wave.
+
+    Requires rmvpe.pt download (~181MB). Run with: pixi run test-pitch-extractor-full
+    """
+
+    def test_f0_on_sine_440hz(self):
+        """440 Hz sine wave → F0 within ±5 cents of 440 Hz on voiced frames."""
+        import numpy as np
+        from models import PitchExtractor
+
+        t = np.linspace(0, 1, 16000, endpoint=False, dtype=np.float32)
+        audio = (0.5 * np.sin(2 * np.pi * 440 * t)).reshape(1, -1)
+
+        model = PitchExtractor.from_pretrained()
+        f0 = model.extract(audio)
+
+        voiced = f0[f0 > 0]
+        assert len(voiced) > 50, f"Too few voiced frames: {len(voiced)}"
+
+        cents = 1200 * np.log2(voiced / 440.0)
+        mean_err = np.abs(cents).mean()
+        print(f"\n  Voiced frames: {len(voiced)}/{len(f0)}")
+        print(f"  Mean cent error: {mean_err:.2f}")
+        print(f"  Max cent error: {np.abs(cents).max():.2f}")
+        assert mean_err < 5.0, f"Mean cent error {mean_err:.2f} > 5 cents"
