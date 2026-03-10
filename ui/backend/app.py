@@ -265,7 +265,7 @@ from math import sqrt
 fn main() raises:
     # 1. Load audio
     var tup = read_wav("{wav_path}")
-    var samples = tup[0]
+    var samples = tup[0].copy()
     var sample_rate = tup[1]
     var n_samples = len(samples)
     var duration_s = Float64(n_samples) / Float64(sample_rate)
@@ -371,9 +371,14 @@ fn main() raises:
             mel_np[m] = [float(v) for v in lines[line_idx].split(',')]
             line_idx += 1
 
-        # Normalize to [0, 1] log scale
-        mel_log = np.log1p(mel_np)
-        mel_norm = (mel_log - mel_log.min()) / (mel_log.max() - mel_log.min() + 1e-8)
+        # Normalize to [0, 1] — Mojo mel_spectrogram already returns log-scale
+        # values (mostly negative), so just min-max normalize directly
+        np.nan_to_num(mel_np, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        denom = mel_np.max() - mel_np.min()
+        if denom < 1e-8:
+            mel_norm = np.zeros_like(mel_np)
+        else:
+            mel_norm = (mel_np - mel_np.min()) / denom
 
         # VAD regions
         n_segs = int(lines[line_idx])

@@ -322,15 +322,12 @@
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
 
-    const ext = gl.getExtension('OES_texture_float');
-    if (ext) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, nFrames, nMels, 0,
-                    gl.LUMINANCE, gl.FLOAT, mel);
-    } else {
-      const mel8 = new Uint8Array(Array.from(mel, v => Math.round(v * 255)));
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, nFrames, nMels, 0,
-                    gl.LUMINANCE, gl.UNSIGNED_BYTE, mel8);
-    }
+    // Use Uint8 always — data is [0,1] so 256 levels is plenty for display,
+    // and avoids OES_texture_float_linear issues (LINEAR filter on float
+    // textures returns black without that extension on many GPUs)
+    const mel8 = new Uint8Array(Array.from(mel, v => Math.round(v * 255)));
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, nFrames, nMels, 0,
+                  gl.LUMINANCE, gl.UNSIGNED_BYTE, mel8);
 
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
