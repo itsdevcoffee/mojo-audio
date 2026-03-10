@@ -48,7 +48,7 @@ repl = "mojo"
 
 # UI
 ui = "cd ui/backend && python app.py"
-dev = "cd web && npm run dev & cd ui/backend && python app.py & wait"
+dev = "cd web && npm install --silent && npm run dev & cd ui/backend && python app.py & wait"
 
 # FFI - Build shared library for C/Rust/Python integration
 build-ffi = "mojo build --emit shared-lib -I src -o libmojo_audio.so src/ffi/audio_ffi.mojo"
