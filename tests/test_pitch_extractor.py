@@ -102,3 +102,144 @@ class TestRmvpeWeightLoader:
         ref = (x - running_mean) / np.sqrt(running_var + 1e-5) * weight + bias
         out = x * scale + offset
         assert np.allclose(ref, out, atol=1e-5), f"Max diff: {np.abs(ref - out).max()}"
+
+
+class TestUNetGraph:
+    """U-Net MAX Graph shape tests — no download required."""
+
+    def _make_full_random_weights(self):
+        """Full random weight dict matching actual RMVPE U-Net architecture."""
+        import numpy as np
+        rng = np.random.default_rng(2)
+        w = {}
+        enc_channels = [1, 16, 32, 64, 128, 256]
+        SCALE = 0.01
+
+        def _rbn(c):
+            return np.ones(c, np.float32), np.zeros(c, np.float32)
+        def _rconv(co, ci, k=3):
+            return rng.standard_normal((co, ci, k, k)).astype(np.float32) * SCALE
+
+        # Initial enc BN
+        w["enc_bn.scale"], w["enc_bn.offset"] = _rbn(1)
+
+        # Encoder: 5 levels, 4 blocks each
+        for L in range(5):
+            c_in, c_out = enc_channels[L], enc_channels[L+1]
+            for B in range(4):
+                ci = c_in if B == 0 else c_out
+                w[f"enc.{L}.{B}.0.w"] = _rconv(c_out, ci)
+                w[f"enc.{L}.{B}.0.b"] = np.zeros(c_out, np.float32)
+                w[f"enc.{L}.{B}.0.scale"], w[f"enc.{L}.{B}.0.offset"] = _rbn(c_out)
+                w[f"enc.{L}.{B}.1.w"] = _rconv(c_out, c_out)
+                w[f"enc.{L}.{B}.1.b"] = np.zeros(c_out, np.float32)
+                w[f"enc.{L}.{B}.1.scale"], w[f"enc.{L}.{B}.1.offset"] = _rbn(c_out)
+                if B == 0:
+                    w[f"enc.{L}.{B}.sc.w"] = _rconv(c_out, ci, k=1)
+                    w[f"enc.{L}.{B}.sc.b"] = np.zeros(c_out, np.float32)
+
+        # Bottleneck: 16 blocks (I=0..15)
+        btl_in = [256] + [512]*15
+        for I in range(16):
+            ci, co = btl_in[I], 512
+            w[f"btl.{I}.0.w"] = _rconv(co, ci)
+            w[f"btl.{I}.0.b"] = np.zeros(co, np.float32)
+            w[f"btl.{I}.0.scale"], w[f"btl.{I}.0.offset"] = _rbn(co)
+            w[f"btl.{I}.1.w"] = _rconv(co, co)
+            w[f"btl.{I}.1.b"] = np.zeros(co, np.float32)
+            w[f"btl.{I}.1.scale"], w[f"btl.{I}.1.offset"] = _rbn(co)
+            if I == 0:
+                w[f"btl.{I}.sc.w"] = _rconv(co, ci, k=1)
+                w[f"btl.{I}.sc.b"] = np.zeros(co, np.float32)
+
+        # Decoder: 5 levels, 4 blocks each
+        dec_channels = [512, 256, 128, 64, 32, 16]
+        for L in range(5):
+            up_ci, up_co = dec_channels[L], dec_channels[L+1]
+            # ConvTranspose: PyTorch [C_in, C_out, H, W]
+            w[f"dec.{L}.up.w"] = rng.standard_normal((up_ci, up_co, 3, 3)).astype(np.float32) * SCALE
+            w[f"dec.{L}.up.b"] = np.zeros(up_co, np.float32)
+            w[f"dec.{L}.up.scale"], w[f"dec.{L}.up.offset"] = _rbn(up_co)
+            # After skip concat: C_in = up_co + enc_channels[4-L]
+            enc_skip_ch = enc_channels[5 - L]  # mirror level
+            skip_ci = up_co + enc_skip_ch
+            for B in range(4):
+                ci = skip_ci if B == 0 else up_co
+                w[f"dec.{L}.{B}.0.w"] = _rconv(up_co, ci)
+                w[f"dec.{L}.{B}.0.b"] = np.zeros(up_co, np.float32)
+                w[f"dec.{L}.{B}.0.scale"], w[f"dec.{L}.{B}.0.offset"] = _rbn(up_co)
+                w[f"dec.{L}.{B}.1.w"] = _rconv(up_co, up_co)
+                w[f"dec.{L}.{B}.1.b"] = np.zeros(up_co, np.float32)
+                w[f"dec.{L}.{B}.1.scale"], w[f"dec.{L}.{B}.1.offset"] = _rbn(up_co)
+                if B == 0:
+                    w[f"dec.{L}.{B}.sc.w"] = _rconv(up_co, ci, k=1)
+                    w[f"dec.{L}.{B}.sc.b"] = np.zeros(up_co, np.float32)
+
+        # Output CNN: [C_out=3, C_in=16, 3, 3] PyTorch
+        w["out_cnn.w"] = _rconv(3, 16)
+        w["out_cnn.b"] = np.zeros(3, np.float32)
+        return w
+
+    def test_unet_graph_buildable(self):
+        """build_unet_graph must construct without errors."""
+        from max import engine
+        from max.driver import CPU
+        from max.graph import DeviceRef
+        from models._rmvpe import build_unet_graph
+
+        weights = self._make_full_random_weights()
+        graph = build_unet_graph(weights, DeviceRef.CPU())
+        model = engine.InferenceSession(devices=[CPU()]).load(graph)
+        assert model is not None
+
+    def test_output_shape_t100(self):
+        """Mel [1, T=100, 128, 1] → [1, 100, 384]."""
+        import numpy as np
+        from max import engine
+        from max.driver import CPU
+        from max.graph import DeviceRef
+        from models._rmvpe import build_unet_graph
+
+        weights = self._make_full_random_weights()
+        model = engine.InferenceSession(devices=[CPU()]).load(
+            build_unet_graph(weights, DeviceRef.CPU())
+        )
+        mel = np.random.randn(1, 100, 128, 1).astype(np.float32) * 0.1
+        result = model.execute(mel)
+        out = (list(result.values())[0] if isinstance(result, dict) else result[0]).to_numpy()
+        assert out.shape == (1, 100, 384), f"Expected (1,100,384) got {out.shape}"
+
+    def test_output_shape_t200(self):
+        """Dynamic T: [1, 200, 128, 1] → [1, 200, 384]."""
+        import numpy as np
+        from max import engine
+        from max.driver import CPU
+        from max.graph import DeviceRef
+        from models._rmvpe import build_unet_graph
+
+        weights = self._make_full_random_weights()
+        model = engine.InferenceSession(devices=[CPU()]).load(
+            build_unet_graph(weights, DeviceRef.CPU())
+        )
+        mel = np.random.randn(1, 200, 128, 1).astype(np.float32) * 0.1
+        result = model.execute(mel)
+        out = (list(result.values())[0] if isinstance(result, dict) else result[0]).to_numpy()
+        assert out.shape == (1, 200, 384), f"Expected (1,200,384) got {out.shape}"
+
+    def test_output_not_nan(self):
+        """U-Net output must not contain NaN or Inf."""
+        import numpy as np
+        from max import engine
+        from max.driver import CPU
+        from max.graph import DeviceRef
+        from models._rmvpe import build_unet_graph
+
+        weights = self._make_full_random_weights()
+        model = engine.InferenceSession(devices=[CPU()]).load(
+            build_unet_graph(weights, DeviceRef.CPU())
+        )
+        mel = np.random.randn(1, 100, 128, 1).astype(np.float32) * 0.1
+        result = model.execute(mel)
+        out = (list(result.values())[0] if isinstance(result, dict) else result[0]).to_numpy()
+        assert not np.isnan(out).any(), "Output contains NaN"
+        assert not np.isinf(out).any(), "Output contains Inf"
