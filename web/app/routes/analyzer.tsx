@@ -5,6 +5,11 @@ import { TabBar } from "../components/ui/TabBar";
 import { Waveform } from "../components/viz/Waveform";
 import { MelSpectrogram } from "../components/viz/MelSpectrogram";
 import { Waterfall3D } from "../components/viz/Waterfall3D";
+import { LinearSTFT } from "../components/viz/LinearSTFT";
+import { Chromagram } from "../components/viz/Chromagram";
+import { RMSEnergy } from "../components/viz/RMSEnergy";
+import { SpectralCentroid } from "../components/viz/SpectralCentroid";
+import { FrequencyDist } from "../components/viz/FrequencyDist";
 import "../styles/analyzer.css";
 
 const TABS = [
@@ -60,14 +65,40 @@ export default function Analyzer() {
           />
         );
       case "stft":
+        return (
+          <LinearSTFT
+            stftData={data.stft_magnitude}
+            nFrames={data.stft_n_frames}
+            nFreqBins={data.stft_n_freq_bins}
+          />
+        );
       case "chroma":
+        return (
+          <Chromagram
+            stftData={data.stft_magnitude}
+            nFrames={data.stft_n_frames}
+            nFreqBins={data.stft_n_freq_bins}
+            sampleRate={data.sample_rate}
+          />
+        );
       case "rms":
+        return <RMSEnergy rmsData={data.rms_energy} duration={data.duration_s} />;
       case "centroid":
+        return (
+          <SpectralCentroid
+            stftData={data.stft_magnitude}
+            nFrames={data.stft_n_frames}
+            nFreqBins={data.stft_n_freq_bins}
+            sampleRate={data.sample_rate}
+            duration={data.duration_s}
+          />
+        );
       case "freq":
         return (
-          <div className="viz-content" style={{ padding: "40px 14px", textAlign: "center" }}>
-            <span className="panel-meta">Coming soon — backend extension needed</span>
-          </div>
+          <FrequencyDist
+            powerSpectrum={data.power_spectrum}
+            sampleRate={data.sample_rate}
+          />
         );
       default:
         return null;
