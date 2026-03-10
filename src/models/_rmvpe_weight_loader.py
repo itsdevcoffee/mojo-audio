@@ -11,11 +11,11 @@ Internal naming convention (flat):
   enc.{L}.{B}.1.w / .b                                 — encoder level L, block B, second conv weight/bias
   enc.{L}.{B}.1.scale / .offset                        — baked BN after second conv
   enc.{L}.{B}.sc.w / .b                                — shortcut conv weight/bias (only block 0)
-  btl.{L}.{B}.0.w / .b / .scale / .offset              — bottleneck level L, block B, first conv
-  btl.{L}.{B}.1.w / .b / .scale / .offset              — bottleneck level L, block B, second conv
-  btl.{L}.{B}.sc.w / .b                                — bottleneck shortcut (only block 0 of level 0)
-  dec.{L}.up.w / .b                                    — decoder level L, ConvTranspose weight/bias (no BN)
-  dec.{L}.up.scale / .offset                           — decoder upsample BN (baked, index 1)
+  btl.{B}.0.w / .b / .scale / .offset                  — bottleneck block B (0..15), first conv
+  btl.{B}.1.w / .b / .scale / .offset                  — bottleneck block B (0..15), second conv
+  btl.{B}.sc.w / .b                                    — bottleneck shortcut (only block 0, raw layer 0)
+  dec.{L}.up.w / .b                                    — decoder level L, ConvTranspose weight/bias
+  dec.{L}.up.scale / .offset                           — decoder upsample BN (baked, confirmed present)
   dec.{L}.{B}.0.w / .b / .scale / .offset              — decoder level L, block B, first conv
   dec.{L}.{B}.1.w / .b / .scale / .offset              — decoder level L, block B, second conv
   dec.{L}.{B}.sc.w / .b                                — decoder shortcut (only block 0)
@@ -37,8 +37,10 @@ Real checkpoint structure (confirmed by diagnostic):
   Each residual block has TWO conv-BN pairs:
     first:  .conv.0 (Conv2d weight/bias), .conv.1 (BN)
     second: .conv.3 (Conv2d weight),      .conv.4 (BN)  — indices skip ReLU at index 2
-  Shortcut has both weight and bias (block 0 only, where channel count changes).
-  Decoder conv1 = [ConvTranspose2d (idx 0), BN (idx 1)].
+  Shortcut has both weight AND bias (block 0 only, where channel count changes).
+  Decoder conv1 = [ConvTranspose2d (idx 0), BN (idx 1)] — BN confirmed present on all 5 levels.
+  Bottleneck: 4 raw PyTorch "layers" (L=0..3), each with 4 residual blocks (B=0..3) = 16 blocks.
+    Internal naming flattens to btl.{L*4+B}.*, i.e. btl.0 through btl.15.
 """
 
 from __future__ import annotations
@@ -50,7 +52,8 @@ _N_ENC_LEVELS = 5
 _N_DEC_LEVELS = 5
 _N_BLOCKS_PER_LEVEL = 4
 
-# Bottleneck has 4 levels, each with 4 blocks
+# Bottleneck: 4 raw PyTorch "layers" × 4 blocks each = 16 blocks total.
+# Internal names use a global sequential index: btl.{L*4+B}.* (btl.0 through btl.15).
 _N_BTL_LEVELS = 4
 _N_BTL_BLOCKS_PER_LEVEL = 4
 
@@ -200,43 +203,45 @@ def load_rmvpe_from_dict(sd: dict) -> dict[str, np.ndarray]:
                 result[f"enc.{L}.{B}.sc.b"] = sc_b
 
     # --- Bottleneck (unet.intermediate) ---
-    # Structure identical to encoder residual blocks.
-    # 4 levels, each with 4 blocks; only level 0 block 0 has a shortcut.
+    # 4 raw PyTorch "layers" × 4 blocks each = 16 blocks total.
+    # Internal index I = L * _N_BTL_BLOCKS_PER_LEVEL + B (0..15).
+    # Only raw layer 0, block 0 has a shortcut (channel change 256→512).
     for L in range(_N_BTL_LEVELS):
         for B in range(_N_BTL_BLOCKS_PER_LEVEL):
+            I = L * _N_BTL_BLOCKS_PER_LEVEL + B
             pfx = f"unet.intermediate.layers.{L}.conv.{B}.conv"
 
             w = _get(raw, f"{pfx}.0.weight")
             if w is None:
                 break
-            result[f"btl.{L}.{B}.0.w"] = w
+            result[f"btl.{I}.0.w"] = w
             b = _get(raw, f"{pfx}.0.bias")
             if b is not None:
-                result[f"btl.{L}.{B}.0.b"] = b
+                result[f"btl.{I}.0.b"] = b
             bn1_prefix = f"unet.intermediate.layers.{L}.conv.{B}.conv.1"
             if f"{bn1_prefix}.weight" in raw:
                 scale, offset = _bake_bn_from_dict(raw, bn1_prefix)
-                result[f"btl.{L}.{B}.0.scale"] = scale
-                result[f"btl.{L}.{B}.0.offset"] = offset
+                result[f"btl.{I}.0.scale"] = scale
+                result[f"btl.{I}.0.offset"] = offset
 
             w2 = _get(raw, f"{pfx}.3.weight")
             if w2 is not None:
-                result[f"btl.{L}.{B}.1.w"] = w2
+                result[f"btl.{I}.1.w"] = w2
                 b2 = _get(raw, f"{pfx}.3.bias")
                 if b2 is not None:
-                    result[f"btl.{L}.{B}.1.b"] = b2
+                    result[f"btl.{I}.1.b"] = b2
                 bn2_prefix = f"unet.intermediate.layers.{L}.conv.{B}.conv.4"
                 if f"{bn2_prefix}.weight" in raw:
                     scale2, offset2 = _bake_bn_from_dict(raw, bn2_prefix)
-                    result[f"btl.{L}.{B}.1.scale"] = scale2
-                    result[f"btl.{L}.{B}.1.offset"] = offset2
+                    result[f"btl.{I}.1.scale"] = scale2
+                    result[f"btl.{I}.1.offset"] = offset2
 
             sc_w = _get(raw, f"unet.intermediate.layers.{L}.conv.{B}.shortcut.weight")
             if sc_w is not None:
-                result[f"btl.{L}.{B}.sc.w"] = sc_w
+                result[f"btl.{I}.sc.w"] = sc_w
             sc_b = _get(raw, f"unet.intermediate.layers.{L}.conv.{B}.shortcut.bias")
             if sc_b is not None:
-                result[f"btl.{L}.{B}.sc.b"] = sc_b
+                result[f"btl.{I}.sc.b"] = sc_b
 
     # --- Decoder levels ---
     # Each level L has:
