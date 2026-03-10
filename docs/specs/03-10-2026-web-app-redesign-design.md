@@ -131,18 +131,22 @@ Already working on main with 3 panels (Waveform, Mel Spectrogram, 3D Waterfall):
 
 ### `/analyze` Response Contract
 
-The FastAPI `/analyze` endpoint returns JSON with this shape (extending current implementation):
+The FastAPI `/analyze` endpoint returns JSON. The existing fields use the current backend's naming convention; new fields follow the same pattern:
 
 ```json
 {
-  "waveform": [float],           // Raw samples, downsampled to ~2000 points
-  "sample_rate": int,            // e.g. 44100
-  "duration": float,             // seconds
-  "vad_segments": [[start, end], ...],  // seconds
-  "mel_spectrogram": [[float]],  // 2D: [n_frames x n_mels], log-scale
-  "stft_magnitude": [[float]],   // 2D: [n_frames x n_freq_bins], linear
-  "rms_energy": [float],         // Per-frame RMS values
-  "power_spectrum": [float]      // Averaged power spectrum (1D)
+  "duration_s": float,                 // seconds
+  "sample_rate": int,                  // e.g. 16000 (resampled)
+  "waveform": [float],                // RMS envelope, ~4000 points
+  "mel_spectrogram": [float],         // Flattened 1D (n_mels × n_frames), log-scale
+  "mel_n_mels": int,                  // 80
+  "mel_n_frames": int,                // varies
+  "vad_regions": [{"start": float, "end": float}, ...],
+  "stft_magnitude": [float],          // NEW: Flattened 1D (n_frames × n_freq_bins)
+  "stft_n_frames": int,               // NEW
+  "stft_n_freq_bins": int,            // NEW
+  "rms_energy": [float],              // NEW: Per-frame RMS values
+  "power_spectrum": [float]           // NEW: Averaged power spectrum (1D)
 }
 ```
 
