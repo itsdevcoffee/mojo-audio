@@ -21,32 +21,33 @@ class TestRmvpeWeightLoader:
     def _make_fake_raw_weights(self):
         """Minimal synthetic checkpoint mimicking rmvpe.pt key/shape structure."""
         import numpy as np
+        rng = np.random.default_rng(42)
         w = {}
         # Initial BN
         for k in ["weight", "bias", "running_mean", "running_var"]:
             w[f"unet.encoder.bn.{k}"] = np.ones(1, dtype=np.float32)
         w["unet.encoder.bn.num_batches_tracked"] = np.array(0, dtype=np.int64)
         # Encoder level 0, block 0 (channels 1→16, has shortcut)
-        w["unet.encoder.layers.0.conv.0.conv.0.weight"] = np.random.randn(16, 1, 3, 3).astype(np.float32)
+        w["unet.encoder.layers.0.conv.0.conv.0.weight"] = rng.standard_normal((16, 1, 3, 3)).astype(np.float32)
         w["unet.encoder.layers.0.conv.0.conv.0.bias"] = np.zeros(16, dtype=np.float32)
         for k in ["weight", "bias", "running_mean", "running_var"]:
             w[f"unet.encoder.layers.0.conv.0.conv.1.{k}"] = np.ones(16, dtype=np.float32)
         w["unet.encoder.layers.0.conv.0.conv.1.num_batches_tracked"] = np.array(0, dtype=np.int64)
-        w["unet.encoder.layers.0.conv.0.shortcut.weight"] = np.random.randn(16, 1, 1, 1).astype(np.float32)
+        w["unet.encoder.layers.0.conv.0.shortcut.weight"] = rng.standard_normal((16, 1, 1, 1)).astype(np.float32)
         # Output CNN
-        w["cnn.weight"] = np.random.randn(3, 16, 3, 3).astype(np.float32)
+        w["cnn.weight"] = rng.standard_normal((3, 16, 3, 3)).astype(np.float32)
         w["cnn.bias"] = np.zeros(3, dtype=np.float32)
         # BiGRU
-        w["fc.0.gru.weight_ih_l0"] = np.random.randn(768, 384).astype(np.float32)
-        w["fc.0.gru.weight_hh_l0"] = np.random.randn(768, 256).astype(np.float32)
+        w["fc.0.gru.weight_ih_l0"] = rng.standard_normal((768, 384)).astype(np.float32)
+        w["fc.0.gru.weight_hh_l0"] = rng.standard_normal((768, 256)).astype(np.float32)
         w["fc.0.gru.bias_ih_l0"] = np.zeros(768, dtype=np.float32)
         w["fc.0.gru.bias_hh_l0"] = np.zeros(768, dtype=np.float32)
-        w["fc.0.gru.weight_ih_l0_reverse"] = np.random.randn(768, 384).astype(np.float32)
-        w["fc.0.gru.weight_hh_l0_reverse"] = np.random.randn(768, 256).astype(np.float32)
+        w["fc.0.gru.weight_ih_l0_reverse"] = rng.standard_normal((768, 384)).astype(np.float32)
+        w["fc.0.gru.weight_hh_l0_reverse"] = rng.standard_normal((768, 256)).astype(np.float32)
         w["fc.0.gru.bias_ih_l0_reverse"] = np.zeros(768, dtype=np.float32)
         w["fc.0.gru.bias_hh_l0_reverse"] = np.zeros(768, dtype=np.float32)
         # Linear output
-        w["fc.1.weight"] = np.random.randn(360, 512).astype(np.float32)
+        w["fc.1.weight"] = rng.standard_normal((360, 512)).astype(np.float32)
         w["fc.1.bias"] = np.zeros(360, dtype=np.float32)
         return w
 

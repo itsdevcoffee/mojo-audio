@@ -170,7 +170,7 @@ def load_rmvpe_from_dict(sd: dict) -> dict[str, np.ndarray]:
             # First conv-BN pair (indices 0, 1)
             w = _get(raw, f"{pfx}.0.weight")
             if w is None:
-                break  # this block doesn't exist in the (possibly truncated) fake weights
+                break  # block B doesn't exist in this checkpoint (or truncated test weights), stop here
             result[f"enc.{L}.{B}.0.w"] = w
             b = _get(raw, f"{pfx}.0.bias")
             if b is not None:
@@ -213,7 +213,7 @@ def load_rmvpe_from_dict(sd: dict) -> dict[str, np.ndarray]:
 
             w = _get(raw, f"{pfx}.0.weight")
             if w is None:
-                break
+                break  # block B doesn't exist in this checkpoint (or truncated test weights), stop here
             result[f"btl.{I}.0.w"] = w
             b = _get(raw, f"{pfx}.0.bias")
             if b is not None:
@@ -268,7 +268,7 @@ def load_rmvpe_from_dict(sd: dict) -> dict[str, np.ndarray]:
 
             w = _get(raw, f"{pfx}.0.weight")
             if w is None:
-                break
+                break  # block B doesn't exist in this checkpoint (or truncated test weights), stop here
             result[f"dec.{L}.{B}.0.w"] = w
             b = _get(raw, f"{pfx}.0.bias")
             if b is not None:
@@ -336,7 +336,8 @@ def load_rmvpe_from_pt(path: str | Path) -> dict[str, np.ndarray]:
 
     state_dict = torch.load(str(path), map_location="cpu", weights_only=True)
     # Handle nested state dicts (rmvpe.pt wraps in {"model": ...})
-    state_dict = state_dict.get("model", state_dict)
+    if isinstance(state_dict, dict) and "model" in state_dict and isinstance(state_dict["model"], dict):
+        state_dict = state_dict["model"]
     weights = {k: v.numpy() for k, v in state_dict.items() if hasattr(v, "numpy")}
     return load_rmvpe_from_dict(weights)
 
