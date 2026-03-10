@@ -155,17 +155,29 @@
     const form = new FormData();
     form.append('file', file);
 
-    const res = await fetch('/analyze', { method: 'POST', body: form });
-    const data = await res.json();
+    try {
+      const res = await fetch('/analyze', { method: 'POST', body: form });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || `Server error ${res.status}`);
+      }
+      const data = await res.json();
 
-    loading.style.display = 'none';
-    panels.style.display = 'flex';
+      loading.style.display = 'none';
+      panels.style.display = 'flex';
 
-    requestAnimationFrame(() => {
-      drawWaveform(data);
-      drawMelSpec(data);
-      drawWaterfall(data);
-    });
+      requestAnimationFrame(() => {
+        drawWaveform(data);
+        drawMelSpec(data);
+        drawWaterfall(data);
+      });
+    } catch (e) {
+      loading.style.display = 'none';
+      dropZone.style.display = 'flex';
+      dropZone.querySelector('h2').textContent = 'Analysis failed — try another file';
+      dropZone.querySelector('h2').style.color = '#ff6b6b';
+      console.error('Analysis error:', e);
+    }
   }
 
 
@@ -197,7 +209,7 @@
 
     const wf = data.waveform;
     const step = W / wf.length;
-    const maxVal = Math.max(...wf) || 1;
+    const maxVal = wf.reduce((a, b) => Math.max(a, b), 0) || 1;
 
     const grad = ctx.createLinearGradient(0, 0, 0, H);
     grad.addColorStop(0, 'rgba(80, 160, 255, 0.9)');
@@ -275,12 +287,25 @@
     function compile(type, src) {
       const s = gl.createShader(type);
       gl.shaderSource(s, src); gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        console.error('Shader compile error:', gl.getShaderInfoLog(s));
+        gl.deleteShader(s);
+        return null;
+      }
       return s;
     }
+    const vs = compile(gl.VERTEX_SHADER, vsrc);
+    const fs = compile(gl.FRAGMENT_SHADER, fsrc);
+    if (!vs || !fs) { drawMelSpecCanvas2D(data, canvas); return; }
+
     const prog = gl.createProgram();
-    gl.attachShader(prog, compile(gl.VERTEX_SHADER, vsrc));
-    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fsrc));
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
     gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      console.error('Program link error:', gl.getProgramInfoLog(prog));
+      drawMelSpecCanvas2D(data, canvas); return;
+    }
     gl.useProgram(prog);
 
     const buf = gl.createBuffer();
@@ -302,7 +327,7 @@
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, nFrames, nMels, 0,
                     gl.LUMINANCE, gl.FLOAT, mel);
     } else {
-      const mel8 = new Uint8Array(mel.map(v => Math.round(v * 255)));
+      const mel8 = new Uint8Array(Array.from(mel, v => Math.round(v * 255)));
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, nFrames, nMels, 0,
                     gl.LUMINANCE, gl.UNSIGNED_BYTE, mel8);
     }
@@ -344,6 +369,7 @@
     const W = container.clientWidth, H = container.clientHeight;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(W, H);
     renderer.setClearColor(0x0d0d1a, 1);
     container.appendChild(renderer.domElement);
