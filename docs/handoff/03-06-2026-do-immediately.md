@@ -218,111 +218,197 @@ Workaround: run pos_conv in numpy outside the MAX graph.
 ### What RMVPE is
 
 RMVPE (Robust Melody Via Pitch Estimation) is the pitch extraction model used in RVC v2.
-It takes a mel spectrogram and outputs a pitch (F0) value per time frame.
+It takes audio and outputs a pitch (F0) value per time frame in Hz.
 
-- Input: mel spectrogram `[B, n_mels=128, T]`
-- Output: pitch probability distribution `[B, 360, T]` then argmax → Hz per frame
-- The 360 pitch bins cover C1–B7 at 20-cent resolution (6 octaves × 60 bins)
+Why it matters: RMVPE is the step between HuBERT (content encoding) and VITS (synthesis).
+Without it on Spark, the VC pipeline falls back to PyTorch for pitch extraction,
+which fails on Spark due to ARM64/CUDA issues.
 
-Why it matters: RMVPE is the step between HuBERT (content) and VITS (synthesis).
-Without it on Spark, the VC pipeline falls back to PyTorch for pitch extraction
-(which fails on Spark due to ARM64/CUDA issues).
+### CONFIRMED architecture (from live checkpoint inspection on DGX Spark, 2026-03-09)
+
+**The architecture is a U-Net, not a simple CNN+BiGRU as previously assumed.**
+741 total keys. Key structure:
+
+```
+Input: mel spectrogram [B, 1, T, 128]  (image: batch, 1-channel, time, freq)
+  ↓
+unet.encoder.bn            → BatchNorm(1) initial normalization
+  ↓
+unet.encoder.layers.0-4    → 5-level encoder with 2× downsampling per level
+  channels: 1 → 16 → 32 → 64 → 128 → 256
+  each level: 4 residual blocks (Conv2D 3×3 + BatchNorm + ReLU, with shortcut)
+  ↓
+unet.intermediate.layers.0-3 → bottleneck: 4 residual blocks at 512 channels
+  ↓
+unet.decoder.layers.0-4    → 5-level decoder with skip connections
+  channels: 512 → 256 → 128 → 64 → 32 → 16
+  each level: ConvTranspose (upsample) + skip concat + 4 residual blocks
+  ↓
+cnn.weight (3, 16, 3, 3)   → final Conv2D: 16 → 3 channels
+  ↓
+Reshape: [B, 3, T, 128] → [B, T, 384]   (3 * 128 = 384 flattened freq features)
+  ↓
+fc.0.gru (BiGRU)           → input=384, hidden=256, bidirectional → output [B, T, 512]
+  weight_ih_l0: (768, 384)    ← forward GRU input weights (768 = 3 gates × 256)
+  weight_hh_l0: (768, 256)    ← forward GRU hidden weights
+  weight_ih_l0_reverse: (768, 384)   ← reverse GRU (bidirectional)
+  weight_hh_l0_reverse: (768, 256)
+  ↓
+fc.1.weight (360, 512)     → linear output: 512 → 360 pitch bins
+  ↓
+Argmax + post-processing   → F0 in Hz per frame
+```
+
+### Key implementation notes
+
+**Good news — U-Net ops are all MAX-friendly:**
+All encoder/decoder convolutions are `Conv2D` with `groups=1`, kernel `3×3`.
+No grouped convolutions, no large kernels — NONE of the bugs we hit with HuBERT pos_conv.
+`ops.conv2d` (encoder) and `ops.conv_transpose` (decoder) both exist in MAX ops.
+
+**BatchNorm in inference mode = simple linear transform:**
+There is no `ops.batch_norm` in MAX. At inference, BatchNorm is:
+```
+y = (x - running_mean) / sqrt(running_var + eps) * weight + bias
+  = x * (weight / sqrt(running_var + eps)) + (bias - running_mean * scale)
+```
+Bake this into `scale` and `offset` constants from the checkpoint's `running_mean`
+and `running_var` tensors. Then just: `ops.add(ops.mul(x, scale_const), offset_const)`.
+
+**BiGRU strategy — split at the GRU boundary:**
+`max.nn` has no GRU (confirmed both Fedora and DGX Spark). The GRU is small and at
+the very end on `[B, T, 384]`. Use the same split pattern as HuBERT's pos_conv:
+
+1. MAX Graph: U-Net encoder + intermediate + decoder + output CNN → `[B, T, 384]`
+2. Numpy: BiGRU on `[B, T, 384]` → `[B, T, 512]`
+3. MAX Graph or numpy: Linear `[B, T, 512]` → `[B, T, 360]`
+
+The U-Net is the heavy compute (GPU wins here); the GRU is sequential and small.
+
+**BiGRU numpy implementation:**
+```python
+import numpy as np
+
+def sigmoid(x): return 1 / (1 + np.exp(-x))
+
+def bigru_forward(x, sd, hidden_size=256):
+    """x: [B, T, 384]. Returns [B, T, 512]."""
+    w_ih_f  = sd["fc.0.gru.weight_ih_l0"]         # (768, 384)
+    w_hh_f  = sd["fc.0.gru.weight_hh_l0"]         # (768, 256)
+    b_ih_f  = sd["fc.0.gru.bias_ih_l0"]           # (768,)
+    b_hh_f  = sd["fc.0.gru.bias_hh_l0"]           # (768,)
+    w_ih_r  = sd["fc.0.gru.weight_ih_l0_reverse"] # (768, 384)
+    w_hh_r  = sd["fc.0.gru.weight_hh_l0_reverse"] # (768, 256)
+    b_ih_r  = sd["fc.0.gru.bias_ih_l0_reverse"]
+    b_hh_r  = sd["fc.0.gru.bias_hh_l0_reverse"]
+
+    def gru_step(x_t, h, w_ih, w_hh, b_ih, b_hh):
+        H = hidden_size
+        gi = x_t @ w_ih.T + b_ih   # [B, 3H]
+        gh = h @ w_hh.T + b_hh     # [B, 3H]
+        z = sigmoid(gi[:, :H]    + gh[:, :H])     # update gate
+        r = sigmoid(gi[:, H:2*H] + gh[:, H:2*H]) # reset gate
+        n = np.tanh(gi[:, 2*H:]  + r * gh[:, 2*H:]) # new gate
+        return (1 - z) * h + z * n
+
+    B, T, _ = x.shape
+    # Forward
+    h = np.zeros((B, hidden_size), np.float32)
+    fwd = []
+    for t in range(T):
+        h = gru_step(x[:, t], h, w_ih_f, w_hh_f, b_ih_f, b_hh_f)
+        fwd.append(h)
+    # Reverse
+    h = np.zeros((B, hidden_size), np.float32)
+    rev = [None] * T
+    for t in range(T-1, -1, -1):
+        h = gru_step(x[:, t], h, w_ih_r, w_hh_r, b_ih_r, b_hh_r)
+        rev[t] = h
+
+    fwd_out = np.stack(fwd, axis=1)  # [B, T, H]
+    rev_out = np.stack(rev, axis=1)  # [B, T, H]
+    return np.concatenate([fwd_out, rev_out], axis=-1)  # [B, T, 512]
+```
 
 ### Where the weights are
 
-```python
-# HuggingFace:
-"lj1995/VoiceConversionWebUI"  # file: rmvpe.pt (~181MB) or rmvpe.onnx (~362MB)
+The checkpoint is at `lj1995/VoiceConversionWebUI`, file `rmvpe.pt` (~181MB).
+Check if already cached (may have been downloaded by Applio):
+```bash
+find ~/.cache -name "rmvpe.pt" 2>/dev/null
+```
 
-# Download:
+If not cached:
+```python
 from huggingface_hub import hf_hub_download
-hf_hub_download("lj1995/VoiceConversionWebUI", "rmvpe.pt")
+path = hf_hub_download("lj1995/VoiceConversionWebUI", "rmvpe.pt")
 ```
 
-### Architecture (from paper + RVC source)
-
-RMVPE is a deep CNN-based pitch salience estimator adapted from E2E-ROFORMER.
-From reading the Applio source at `rvc/lib/predictors/RMVPE.py`:
+### Validated weight key examples (from live inspection)
 
 ```
-Input: raw audio → mel spectrogram [B, 128, T]
-  ↓
-Stack of residual CNN blocks (conv2d, batch norm, ReLU)
-  ↓
-Bidirectional GRU layers
-  ↓
-Linear output layer → [B, 360, T]  (pitch salience per bin)
-  ↓
-Post-processing → peak Hz per frame
+unet.encoder.bn.weight: (1,)
+unet.encoder.layers.0.conv.0.conv.0.weight: (16, 1, 3, 3)     ← first residual block
+unet.encoder.layers.0.conv.0.conv.1.weight: (16,)              ← BN weight
+unet.encoder.layers.0.conv.0.conv.1.running_mean: (16,)        ← BN running stats
+unet.encoder.layers.0.conv.0.shortcut.weight: (16, 1, 1, 1)   ← residual shortcut
+unet.decoder.layers.0.conv1.0.weight: (512, 256, 3, 3)         ← ConvTranspose
+unet.decoder.layers.0.conv2.0.conv.0.weight: (256, 512, 3, 3) ← after skip concat
+cnn.weight: (3, 16, 3, 3)
+cnn.bias: (3,)
+fc.0.gru.weight_ih_l0: (768, 384)
+fc.1.weight: (360, 512)
+fc.1.bias: (360,)
 ```
 
-Key architecture details to verify by reading the model:
-```python
-import torch
-from huggingface_hub import hf_hub_download
-ckpt = torch.load(hf_hub_download("lj1995/VoiceConversionWebUI", "rmvpe.pt"), map_location="cpu")
-print(list(ckpt.keys())[:20])          # see top-level structure
-print(ckpt.get("model", ckpt).keys())  # see layer names
-```
-
-This will reveal the actual layer structure, which is what drives the MAX Graph implementation.
-
-### How to implement (follow the HuBERT pattern)
-
-The HuBERT implementation in `src/models/audio_encoder.py` is the template.
-The same MAX Graph API patterns apply:
+### MAX Graph API facts (all verified on DGX Spark SM_121)
 
 ```python
-# Key MAX API facts already discovered:
 from max.graph import Graph, TensorType, ops, DeviceRef, Dim
 from max.dtype import DType
 
-TensorType(DType.float32, [1, Dim("T"), 128], device_ref)  # dynamic T, NOT -1
-ops.conv2d(x, w, stride=(1,1), padding=(0,0,0,0), groups=1)  # groups=1 works correctly
-ops.layer_norm(x, gamma, beta, 1e-5)
-ops.gelu(x), ops.relu(x), ops.sigmoid(x)
-ops.matmul(x, w_transposed)   # w must be .T of PyTorch [out, in] format
-ops.transpose(x, axis_a, axis_b)  # ONLY 2 axes at a time, not a permutation list
-ops.reshape(x, [1, -1, C])    # -1 works in reshape even though TensorType needs Dim()
-result = model.execute(inp)   # positional arg, not keyword
-tensor.to_numpy()              # NOT np.array(tensor) — returns shape ()
+# Dynamic dims: use Dim(), NOT -1
+TensorType(DType.float32, [1, 1, Dim("T"), 128], device_ref)
+
+# Conv2D — works correctly for groups=1 (no bug)
+ops.conv2d(x, w, stride=(2,2), padding=(1,1,1,1), groups=1)
+
+# ConvTranspose — available for decoder upsampling
+ops.conv_transpose(x, w, stride=(2,2), ...)
+
+# All standard activations: ops.relu, ops.gelu, ops.sigmoid, ops.tanh
+# Layer ops: ops.layer_norm, ops.matmul, ops.reshape(-1 ok), ops.softmax
+# ops.transpose(x, a, b) — swaps only 2 axes, not a permutation list
+# results: tensor.to_numpy()  NOT np.array(tensor) which returns shape ()
 ```
 
-**If RMVPE uses GRU/LSTM:** These are not directly available as `ops.*` primitives.
-Options:
-1. Check if `max.nn` has a GRU — look at `dir(max.nn)` for "GRU", "LSTM", "RNN"
-2. If not: implement GRU manually using `ops.matmul`, `ops.sigmoid`, `ops.tanh`, `ops.add`, `ops.mul`
-   (GRU has 3 gate operations — update, reset, candidate — all expressible with basic ops)
-3. Alternatively: export RMVPE to ONNX and test via `onnxruntime` to validate the architecture
-   before implementing in MAX (use the already-installed `onnxruntime` in the pixi env)
-
-**Suggested implementation structure:**
+### Suggested implementation structure
 
 ```
 src/models/
-  _rmvpe.py              # CNN blocks, GRU, output layer
-  pitch_extractor.py     # PitchExtractor class (mirrors AudioEncoder pattern)
+  _rmvpe.py          # U-Net encoder/decoder, BatchNorm baking, BiGRU, output
+  pitch_extractor.py # PitchExtractor class (mirrors AudioEncoder pattern)
 ```
 
 ```python
 from mojo_audio.models import PitchExtractor
 
-model = PitchExtractor.from_pretrained("lj1995/VoiceConversionWebUI/rmvpe.pt")
-f0_hz = model.extract(audio_np)   # [1, T_frames] in Hz, 0 where unvoiced
+model = PitchExtractor.from_pretrained("lj1995/VoiceConversionWebUI", filename="rmvpe.pt")
+f0_hz = model.extract(audio_np)  # float32 [1, 16000] → float32 [T_frames] Hz, 0=unvoiced
 ```
 
 ### Validation target
 
-Compare against `torchcrepe` or Applio's RMVPE inference:
-- Same input → output F0 values should match within 5 cents (~0.3% Hz error)
-- Run on 1s @16kHz → expect ~100 F0 values (one per 10ms frame)
+Compare against Applio's RMVPE on the same audio:
+- `rvc/lib/predictors/RMVPE.py` → `RMVPE.infer_from_audio(audio, thred=0.03)`
+- Our output must match within ±5 cents on voiced frames (~0.3% Hz error)
+- 1s @16kHz → ~100 F0 frames
 
 ### Files to read first
 
-Before writing any code, read:
-1. `src/models/audio_encoder.py` — the HuBERT implementation is the template
-2. `src/models/_weight_loader.py` — extend this to handle RMVPE weight keys
-3. `docs/plans/03-05-2026-hubert-contentvec-max-graph.md` — the plan we followed
+1. `src/models/audio_encoder.py` — the HuBERT template to follow
+2. `src/models/_weight_loader.py` — extend this for RMVPE weight keys
+3. `docs/plans/03-05-2026-hubert-contentvec-max-graph.md` — the approach we used
 
 ### pixi tasks to add when done
 
