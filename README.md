@@ -193,6 +193,36 @@ The next steps are tracked in [docs/project/03-06-2026-roadmap.md](docs/project/
 
 ---
 
+## Comparison
+
+| Feature | mojo-audio | librosa | torchaudio | RVC / Applio | pyworld |
+|---------|:----------:|:-------:|:----------:|:------------:|:-------:|
+| **DSP** | | | | | |
+| Mel spectrogram | ✅ | ✅ | ✅ | via librosa | ❌ |
+| FFT / STFT | ✅ | ✅ | ✅ | via librosa | partial |
+| Resampling | ✅ | ✅ | ✅ | via librosa | ❌ |
+| Voice activity detection | ✅ | ❌ | ❌ | via silero | ❌ |
+| Phase vocoder pitch shift | ✅ | ✅ | ❌ | ✅ | ❌ |
+| iSTFT / Griffin-Lim | ✅ | ✅ | ✅ | ❌ | ❌ |
+| WAV I/O | ✅ | ✅ | ✅ | ✅ | ❌ |
+| C FFI / shared library | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **ML Inference** | | | | | |
+| HuBERT content features | ✅ MAX Graph | ❌ | ❌ | ✅ PyTorch | ❌ |
+| ContentVec content features | ✅ MAX Graph | ❌ | ❌ | ✅ PyTorch | ❌ |
+| RMVPE pitch extraction | ✅ MAX Graph | ❌ | ❌ | ✅ PyTorch | ❌ |
+| WORLD pitch extraction | ❌ | ❌ | ❌ | via pyworld | ✅ |
+| GPU inference | ✅ MAX Engine | ❌ | ✅ CUDA | ✅ CUDA | ❌ |
+| **Platform** | | | | | |
+| Linux x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| DGX Spark ARM64 | ✅ | ✅ | ❌ | ❌ | ❌ |
+| macOS Apple Silicon | ✅ | ✅ | ✅ | partial | ✅ |
+| PyTorch CUDA required | ❌ | ❌ | ✅ | ✅ | ❌ |
+| **Performance** | | | | | |
+| Mel spec vs librosa | **+20–40%** | baseline | ~parity | baseline | — |
+| GPU inference without CUDA | ✅ | ❌ | ❌ | ❌ | ❌ |
+
+---
+
 ## Known Issues
 
 **MAX Engine conv2d groups bug (v26.1):** `ops.conv2d` returns incorrect results when `groups > 1` and kernel size is large (K≥128). Filed as [modular/modular#6129](https://github.com/modular/modular/issues/6129). Workaround: HuBERT's `pos_conv` layer runs outside the MAX Graph via numpy.
