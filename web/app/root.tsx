@@ -1,3 +1,4 @@
+import "./styles/global.css";
 import type { LinksFunction, MetaFunction } from "@remix-run/node";
 import {
   Links,
@@ -33,7 +34,7 @@ export default function App() {
         <Meta />
         <Links />
       </head>
-      <body style={{ fontFamily: "'Fira Code', monospace", margin: 0 }}>
+      <body>
         <Outlet />
         <ScrollRestoration />
         <Scripts />
