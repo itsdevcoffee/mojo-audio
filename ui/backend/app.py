@@ -5,7 +5,6 @@ Provides endpoints for running Mojo and librosa benchmarks.
 """
 
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -31,10 +30,6 @@ app.add_middleware(
 # Configuration
 REPO_ROOT = Path(__file__).parent.parent.parent
 UI_ROOT = Path(__file__).parent.parent
-
-# Add src/ to path for mojo_audio modules
-if str(REPO_ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "src"))
 
 ALLOWED_BLAS_BACKENDS = frozenset(["mkl", "openblas"])
 BENCHMARK_TIMEOUT_SECONDS = 120
@@ -251,61 +246,159 @@ async def analyze_audio(file: UploadFile = File(...)):
 
 
 def _process_audio(wav_path: str) -> dict:
-    """Process audio through mojo-audio DSP and return visualization data."""
-    from wav_io import read_wav
-    from resample import resample_to_16k
-    from vad import get_voice_segments
-    from audio import mel_spectrogram
+    """Process audio through mojo-audio DSP via subprocess and return visualization data.
 
+    Mojo modules (.mojo) aren't Python-importable — they must be run via the
+    Mojo compiler.  We generate a temp .mojo script that does all DSP and
+    prints raw numeric data to stdout, then post-process in Python/numpy.
+    """
+    import json as _json
+
+    # Mojo script: read WAV, resample, mel spec, VAD — output as JSON lines
+    mojo_code = f"""
+from wav_io import read_wav
+from resample import resample_to_16k
+from vad import get_voice_segments
+from audio import mel_spectrogram
+from math import sqrt
+
+fn main() raises:
     # 1. Load audio
-    samples, sample_rate = read_wav(wav_path)
-    samples_np = np.array(samples, dtype=np.float32)
-    duration_s = len(samples_np) / sample_rate
+    var tup = read_wav("{wav_path}")
+    var samples = tup[0]
+    var sample_rate = tup[1]
+    var n_samples = len(samples)
+    var duration_s = Float64(n_samples) / Float64(sample_rate)
 
-    # 2. Waveform — downsample to ~4000 RMS envelope points
-    display_points = 4000
-    hop = max(1, len(samples_np) // display_points)
-    chunks = [samples_np[i:i+hop] for i in range(0, len(samples_np), hop)]
-    waveform_display = [float(np.sqrt(np.mean(c**2))) if len(c) > 0 else 0.0
-                        for c in chunks]
+    # Print header: duration_s, sample_rate, n_samples
+    print(String(duration_s) + "," + String(sample_rate) + "," + String(n_samples))
 
-    # 3. Resample to 16kHz for mel spectrogram
-    samples_16k_list = resample_to_16k(list(samples), sample_rate)
-    samples_16k = np.array(samples_16k_list, dtype=np.float32)
+    # 2. Waveform RMS envelope (~4000 points)
+    var display_points = 4000
+    var hop = n_samples // display_points
+    if hop < 1:
+        hop = 1
+    var wf_parts = List[String]()
+    var i = 0
+    while i < n_samples:
+        var end = i + hop
+        if end > n_samples:
+            end = n_samples
+        var sum_sq: Float64 = 0.0
+        for j in range(i, end):
+            var v = Float64(samples[j])
+            sum_sq += v * v
+        var rms = sqrt(sum_sq / Float64(end - i))
+        wf_parts.append(String(Float32(rms)))
+        i = end
+    # Join with commas
+    var wf_line = String("")
+    for idx in range(len(wf_parts)):
+        if idx > 0:
+            wf_line += ","
+        wf_line += wf_parts[idx]
+    print(wf_line)
 
-    # 4. Mel spectrogram — 80 mel bands
-    n_fft = 400
-    hop_length = 160  # 10ms at 16kHz
-    mel_spec = mel_spectrogram(
-        list(samples_16k),
-        n_mels=80,
-        n_fft=n_fft,
-        hop_length=hop_length,
-        sample_rate=16000,
-    )
-    mel_np = np.array([[v for v in row] for row in mel_spec], dtype=np.float32)
-    n_mels, n_frames = mel_np.shape
+    # 3. Resample to 16kHz
+    var samples_16k = resample_to_16k(samples, sample_rate)
 
-    # Normalize to [0, 1] log scale
-    mel_log = np.log1p(mel_np)
-    mel_norm = (mel_log - mel_log.min()) / (mel_log.max() - mel_log.min() + 1e-8)
+    # 4. Mel spectrogram (80 bands)
+    var mel = mel_spectrogram(samples_16k, n_fft=400, hop_length=160, n_mels=80)
+    var n_mels = len(mel)
+    var n_frames = len(mel[0]) if n_mels > 0 else 0
+    print(String(n_mels) + "," + String(n_frames))
 
-    # 5. VAD regions
-    voice_segs = get_voice_segments(list(samples), sample_rate)
-    vad_regions = [
-        {"start": float(seg[0] / sample_rate), "end": float(seg[1] / sample_rate)}
-        for seg in voice_segs
-    ]
+    # Print mel data row by row (each row = one mel band, comma-separated)
+    for m in range(n_mels):
+        var row_parts = List[String]()
+        for f in range(n_frames):
+            row_parts.append(String(mel[m][f]))
+        var row_line = String("")
+        for idx in range(len(row_parts)):
+            if idx > 0:
+                row_line += ","
+            row_line += row_parts[idx]
+        print(row_line)
 
-    return {
-        "duration_s": float(duration_s),
-        "sample_rate": int(sample_rate),
-        "waveform": waveform_display,
-        "mel_spectrogram": mel_norm.flatten().tolist(),
-        "mel_n_mels": int(n_mels),
-        "mel_n_frames": int(n_frames),
-        "vad_regions": vad_regions,
-    }
+    # 5. VAD segments
+    var segs = get_voice_segments(samples, sample_rate)
+    var n_segs = len(segs)
+    print(String(n_segs))
+    for s in range(n_segs):
+        print(String(segs[s][0]) + "," + String(segs[s][1]))
+"""
+
+    # Write temp Mojo script
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.mojo', delete=False) as f:
+        mojo_script_path = Path(f.name)
+        f.write(mojo_code)
+
+    try:
+        result = subprocess.run(
+            ['pixi', 'run', '--', 'mojo', 'run', '-I', 'src', str(mojo_script_path)],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+            timeout=60,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(f"Mojo DSP failed: {result.stderr.strip()}")
+
+        # Parse stdout
+        lines = result.stdout.strip().split('\n')
+        line_idx = 0
+
+        # Line 0: duration_s, sample_rate, n_samples
+        header = lines[line_idx].split(',')
+        line_idx += 1
+        duration_s = float(header[0])
+        sample_rate = int(header[1])
+
+        # Line 1: waveform RMS values
+        waveform = [float(v) for v in lines[line_idx].split(',')]
+        line_idx += 1
+
+        # Line 2: n_mels, n_frames
+        mel_shape = lines[line_idx].split(',')
+        line_idx += 1
+        n_mels = int(mel_shape[0])
+        n_frames = int(mel_shape[1])
+
+        # Next n_mels lines: mel spectrogram rows
+        mel_np = np.zeros((n_mels, n_frames), dtype=np.float32)
+        for m in range(n_mels):
+            mel_np[m] = [float(v) for v in lines[line_idx].split(',')]
+            line_idx += 1
+
+        # Normalize to [0, 1] log scale
+        mel_log = np.log1p(mel_np)
+        mel_norm = (mel_log - mel_log.min()) / (mel_log.max() - mel_log.min() + 1e-8)
+
+        # VAD regions
+        n_segs = int(lines[line_idx])
+        line_idx += 1
+        vad_regions = []
+        for _ in range(n_segs):
+            parts = lines[line_idx].split(',')
+            line_idx += 1
+            vad_regions.append({
+                "start": float(int(parts[0]) / sample_rate),
+                "end": float(int(parts[1]) / sample_rate),
+            })
+
+        return {
+            "duration_s": duration_s,
+            "sample_rate": sample_rate,
+            "waveform": waveform,
+            "mel_spectrogram": mel_norm.flatten().tolist(),
+            "mel_n_mels": n_mels,
+            "mel_n_frames": n_frames,
+            "vad_regions": vad_regions,
+        }
+
+    finally:
+        mojo_script_path.unlink(missing_ok=True)
 
 
 @app.get("/visualizer")
