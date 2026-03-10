@@ -3,23 +3,35 @@
 ## Documentation Organization
 
 All markdown files go in `docs/` (except README.md, CLAUDE.md, LICENSE.md, CONTRIBUTING.md).
+Never create ALL_CAPS.md files anywhere except those four special cases.
 
-**Subdirectories:**
-- `docs/prompts/` - Prompts for copying into new agent sessions
-- `docs/context/` - Context documents for future reference
-- `docs/research/` - Research, comparisons, explorations
-- `docs/project/` - High-level planning (todos, features, roadmap)
-- `docs/architecture/` - System design, architectural patterns
-- `docs/decisions/` - Design decisions, technical rationale (ADRs)
-- `docs/guides/` - User-facing documentation and tutorials
-- `docs/tmp/` - Temporary files (safe to delete anytime)
+**Subdirectories and what belongs where:**
 
-**File naming:** `[MM-DD-YYYY]-[short-name-with-hyphens].md`
-- Example: `01-11-2026-mojo-ffi-constraints.md`
-- Lowercase, hyphens for spaces
-- Date prefix for chronological sorting
+| Directory | What goes here | Date prefix? |
+|-----------|---------------|-------------|
+| `docs/context/` | Living reference: architecture, constraints, capabilities, cheat sheets | No |
+| `docs/guides/` | Living tutorials and how-to docs for contributors / users | No |
+| `docs/decisions/` | ADRs — why we made a specific technical choice | Yes |
+| `docs/research/` | Point-in-time explorations, comparisons, experiments | Yes |
+| `docs/plans/` | Implementation plans for specific features | Yes |
+| `docs/handoff/` | Context documents for agent-to-agent or session handoffs | Yes |
+| `docs/project/` | Roadmaps and high-level strategy | Yes |
+| `docs/benchmarks/` | Benchmark results tied to a date/version | Yes |
+| `docs/drafts/` | Work in progress, not yet published | No |
 
-**Never create all-caps markdown files at project root** (except the special cases listed above).
+**Date prefix rule — the key distinction:**
+
+- **Use a date prefix** when the document is a snapshot: a plan written at a point in time, a decision made, research done, results recorded. The date tells readers "this reflects what we knew on X date."
+  - Example: `docs/plans/03-05-2026-hubert-max-engine-experiment.md`
+
+- **No date prefix** when the document is living reference: a guide, a cheat sheet, an architecture overview. These should be updated in-place as things change. A date implies "snapshot" and misleads readers who expect current information.
+  - Example: `docs/guides/ffi-integration-guide.md`
+
+**Naming:** lowercase, hyphens for spaces, descriptive.
+- With date: `MM-DD-YYYY-short-name.md`
+- Without date: `short-descriptive-name.md`
+
+**Before creating a new doc:** check if an existing one should be updated instead.
 
 ## Mojo Language Specifics
 
