@@ -286,3 +286,111 @@ class TestUNetGraph:
         assert max_out.shape == ref.shape, f"Shape mismatch: MAX {max_out.shape} vs PyTorch {ref.shape}"
         diff = np.abs(max_out - ref).max()
         assert diff < 1e-4, f"ConvTranspose diff {diff:.2e} exceeds tolerance"
+
+
+class TestBiGRU:
+    """BiGRU numpy implementation tests."""
+
+    def _make_gru_weights(self, hidden=256, input_size=384):
+        """Random BiGRU weights matching internal naming."""
+        rng = np.random.default_rng(3)
+        w = {}
+        gate_size = 3 * hidden
+        for suffix, shape in [
+            ("weight_ih_l0", (gate_size, input_size)),
+            ("weight_hh_l0", (gate_size, hidden)),
+            ("bias_ih_l0", (gate_size,)),
+            ("bias_hh_l0", (gate_size,)),
+            ("weight_ih_l0_reverse", (gate_size, input_size)),
+            ("weight_hh_l0_reverse", (gate_size, hidden)),
+            ("bias_ih_l0_reverse", (gate_size,)),
+            ("bias_hh_l0_reverse", (gate_size,)),
+        ]:
+            w[f"gru.{suffix}"] = rng.standard_normal(shape).astype(np.float32) * 0.01
+        return w
+
+    def test_output_shape(self):
+        """BiGRU: [1, T, 384] -> [1, T, 512]."""
+        from models._rmvpe import bigru_forward
+        weights = self._make_gru_weights()
+        x = np.random.randn(1, 100, 384).astype(np.float32) * 0.1
+        out = bigru_forward(x, weights)
+        assert out.shape == (1, 100, 512), f"Expected (1,100,512) got {out.shape}"
+
+    def test_output_not_nan(self):
+        from models._rmvpe import bigru_forward
+        weights = self._make_gru_weights()
+        x = np.random.randn(1, 50, 384).astype(np.float32) * 0.1
+        out = bigru_forward(x, weights)
+        assert not np.isnan(out).any()
+        assert not np.isinf(out).any()
+
+    def test_forward_reverse_differ(self):
+        """Forward and reverse halves must differ (not identical)."""
+        from models._rmvpe import bigru_forward
+        weights = self._make_gru_weights()
+        x = np.random.randn(1, 20, 384).astype(np.float32)
+        out = bigru_forward(x, weights)
+        fwd = out[:, :, :256]
+        rev = out[:, :, 256:]
+        assert not np.allclose(fwd, rev), "Forward and reverse GRU outputs are identical (bug)"
+
+    def test_causal_ordering(self):
+        """Forward half must depend on past, reverse half on future."""
+        from models._rmvpe import bigru_forward
+        rng = np.random.default_rng(5)
+        weights = self._make_gru_weights()
+        x = rng.standard_normal((1, 10, 384)).astype(np.float32) * 0.1
+        x_same_start = x.copy()
+        x_diff_end = x.copy()
+        x_diff_end[:, 5:, :] = rng.standard_normal((1, 5, 384)).astype(np.float32)
+        out_orig = bigru_forward(x_same_start, weights)
+        out_diff = bigru_forward(x_diff_end, weights)
+        # Forward half at t=0..4 should be IDENTICAL (only depends on past 0..t)
+        assert np.allclose(out_orig[:, :5, :256], out_diff[:, :5, :256]), \
+            "Forward half changed when only future frames differ — not causal"
+        # Reverse half at t=0..4 should DIFFER (depends on future frames 5..9 which changed)
+        assert not np.allclose(out_orig[:, :5, 256:], out_diff[:, :5, 256:]), \
+            "Reverse half unchanged when future frames differ — bug"
+
+
+class TestPitchPostProcessing:
+    """Tests for pitch salience -> Hz conversion."""
+
+    def test_to_hz_shape(self):
+        """Salience [1, T, 360] -> Hz [T] float32."""
+        from models._rmvpe import salience_to_hz
+        salience = np.random.rand(1, 100, 360).astype(np.float32)
+        hz = salience_to_hz(salience, threshold=0.03)
+        assert hz.shape == (100,), f"Expected (100,) got {hz.shape}"
+        assert hz.dtype == np.float32
+
+    def test_hz_range_voiced(self):
+        """Voiced frames must be in reasonable pitch range (20-5000 Hz)."""
+        from models._rmvpe import salience_to_hz
+        salience = np.zeros((1, 10, 360), dtype=np.float32)
+        salience[:, :, 180] = 1.0  # peak at bin 180
+        hz = salience_to_hz(salience, threshold=0.03)
+        voiced = hz[hz > 0]
+        assert len(voiced) == 10
+        assert (voiced > 20).all() and (voiced < 5000).all(), \
+            f"Voiced Hz out of range: min={voiced.min():.1f}, max={voiced.max():.1f}"
+
+    def test_unvoiced_returns_zero(self):
+        """Low-salience frames must return 0 Hz."""
+        from models._rmvpe import salience_to_hz
+        salience = np.full((1, 10, 360), 0.001, dtype=np.float32)
+        hz = salience_to_hz(salience, threshold=0.03)
+        assert (hz == 0).all(), f"Expected all zeros, got: {hz}"
+
+    def test_linear_output_shape(self):
+        """linear_output: [1, T, 512] -> [1, T, 360]."""
+        from models._rmvpe import linear_output
+        rng = np.random.default_rng(6)
+        weights = {
+            "linear.weight": rng.standard_normal((360, 512)).astype(np.float32),
+            "linear.bias": np.zeros(360, dtype=np.float32),
+        }
+        x = rng.standard_normal((1, 50, 512)).astype(np.float32)
+        out = linear_output(x, weights)
+        assert out.shape == (1, 50, 360), f"Expected (1,50,360) got {out.shape}"

@@ -317,3 +317,127 @@ def build_unet_graph(
         g.output(x)
 
     return g
+
+
+# ---------------------------------------------------------------------------
+# BiGRU (numpy — max.nn has no GRU)
+# ---------------------------------------------------------------------------
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    return (1.0 / (1.0 + np.exp(-x.astype(np.float64)))).astype(np.float32)
+
+
+def bigru_forward(x: np.ndarray, weights: dict, hidden_size: int = 256) -> np.ndarray:
+    """Bidirectional GRU (numpy).
+
+    Args:
+        x: [B, T, 384] float32
+        weights: dict with keys gru.weight_ih_l0, gru.weight_hh_l0,
+                 gru.bias_ih_l0, gru.bias_hh_l0,
+                 gru.weight_ih_l0_reverse, gru.weight_hh_l0_reverse,
+                 gru.bias_ih_l0_reverse, gru.bias_hh_l0_reverse
+        hidden_size: 256
+
+    Returns:
+        [B, T, 512] float32 — concat of forward [B,T,256] and reverse [B,T,256]
+    """
+    H = hidden_size
+
+    def _gru_step(x_t, h, w_ih, w_hh, b_ih, b_hh):
+        # x_t: [B, input_size], h: [B, H]
+        gi = x_t @ w_ih.T + b_ih  # [B, 3H]
+        gh = h @ w_hh.T + b_hh    # [B, 3H]
+        z = _sigmoid(gi[:, :H]    + gh[:, :H])       # update gate [B, H]
+        r = _sigmoid(gi[:, H:2*H] + gh[:, H:2*H])    # reset gate  [B, H]
+        n = np.tanh(gi[:, 2*H:]   + r * gh[:, 2*H:]) # new gate    [B, H]
+        return ((1.0 - z) * h + z * n).astype(np.float32)
+
+    B, T, _ = x.shape
+    w = weights
+
+    # Forward pass (t=0 -> T-1)
+    h_fwd = np.zeros((B, H), dtype=np.float32)
+    fwd_states = []
+    for t in range(T):
+        h_fwd = _gru_step(
+            x[:, t], h_fwd,
+            w["gru.weight_ih_l0"], w["gru.weight_hh_l0"],
+            w["gru.bias_ih_l0"],   w["gru.bias_hh_l0"],
+        )
+        fwd_states.append(h_fwd)
+
+    # Reverse pass (t=T-1 -> 0)
+    h_rev = np.zeros((B, H), dtype=np.float32)
+    rev_states = [None] * T
+    for t in range(T - 1, -1, -1):
+        h_rev = _gru_step(
+            x[:, t], h_rev,
+            w["gru.weight_ih_l0_reverse"], w["gru.weight_hh_l0_reverse"],
+            w["gru.bias_ih_l0_reverse"],   w["gru.bias_hh_l0_reverse"],
+        )
+        rev_states[t] = h_rev
+
+    fwd_out = np.stack(fwd_states, axis=1)  # [B, T, H]
+    rev_out = np.stack(rev_states, axis=1)  # [B, T, H]
+    return np.concatenate([fwd_out, rev_out], axis=-1)  # [B, T, 512]
+
+
+# ---------------------------------------------------------------------------
+# Linear output + pitch salience -> Hz
+# ---------------------------------------------------------------------------
+
+def linear_output(x: np.ndarray, weights: dict) -> np.ndarray:
+    """[B, T, 512] -> [B, T, 360] via linear layer."""
+    W = weights["linear.weight"]  # [360, 512]
+    b = weights["linear.bias"]    # [360]
+    return (x @ W.T + b).astype(np.float32)
+
+
+# RMVPE pitch bins: 360 bins, 20-cent resolution
+# Bin i -> frequency = 440 * 2^((i * 20 - 6900) / 1200) Hz
+# Bin 0 ~= 32.7 Hz (C1), bin 359 ~= 1975.5 Hz (B6)
+_CENTS_PER_BIN = 20.0
+_CENTER_CENTS = 6900.0
+
+
+def _bins_to_hz(bin_indices: np.ndarray) -> np.ndarray:
+    """Convert RMVPE bin indices (float, for sub-bin accuracy) to Hz."""
+    cents = bin_indices.astype(np.float32) * _CENTS_PER_BIN - _CENTER_CENTS
+    return (440.0 * (2.0 ** (cents / 1200.0))).astype(np.float32)
+
+
+def salience_to_hz(salience: np.ndarray, threshold: float = 0.03) -> np.ndarray:
+    """Convert pitch salience [1, T, 360] to F0 Hz per frame [T].
+
+    Uses weighted local average around the peak bin for sub-bin precision.
+    Frames where max salience < threshold are unvoiced (0 Hz).
+
+    Args:
+        salience: [1, T, 360] float32 — raw logits from linear_output (pre-sigmoid).
+        threshold: sigmoid(logit) must exceed this to be voiced.
+
+    Returns:
+        [T] float32 — F0 in Hz, 0.0 = unvoiced.
+    """
+    logits = salience[0]  # [T, 360] — raw logits
+    prob = (1.0 / (1.0 + np.exp(-logits.astype(np.float64)))).astype(np.float32)  # [T, 360]
+    T = prob.shape[0]
+
+    center_bin = np.argmax(prob, axis=-1)  # [T]
+    # Threshold on raw logit at the peak bin — matches RMVPE voiced/unvoiced decision.
+    # sigmoid(0.03) ≈ 0.5075, so a threshold of 0.03 on the logit is intentionally strict.
+    max_logit = logits[np.arange(T), center_bin]  # [T]
+
+    bin_idx = np.arange(360, dtype=np.float32)
+    weighted_bins = np.zeros(T, dtype=np.float32)
+    for t in range(T):
+        lo = max(0, center_bin[t] - 4)
+        hi = min(360, center_bin[t] + 5)
+        w_t = prob[t, lo:hi]
+        b_t = bin_idx[lo:hi]
+        w_sum = w_t.sum()
+        weighted_bins[t] = (b_t * w_t).sum() / w_sum if w_sum > 1e-8 else float(center_bin[t])
+
+    hz = _bins_to_hz(weighted_bins)
+    hz[max_logit < threshold] = 0.0
+    return hz
