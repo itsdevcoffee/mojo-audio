@@ -43,12 +43,12 @@ Residual block:
 ConvTranspose2d implementation note:
   ops.conv2d_transpose is broken in this MAX version (cannot lower to LLVM:
   num_groups). We use the mathematically equivalent zero-interleave + regular conv:
-    1. Insert zeros between input positions along H: [B,H,W,C] → [B,2H-1,W,C]
-    2. Insert zeros between input positions along W: [B,2H-1,W,C] → [B,2H-1,2W-1,C]
+    1. Insert one zero row after each input row along H: [B,H,W,C] → [B,2H,W,C]
+    2. Insert one zero col after each input col along W: → [B,2H,2W,C]
     3. Apply regular conv2d with flipped weights and padding=1
-  This gives output shape (2H-1, 2W-1), matching PyTorch ConvTranspose2d with
-  stride=2, kernel=3, padding=1 (which also gives 2H-1).
-  Numerical validation confirms max diff < 2e-7 vs PyTorch.
+  This matches PyTorch ConvTranspose2d(stride=2, kernel=3, padding=1, output_padding=1),
+  which RMVPE uses to double spatial dims (H→2H, W→2W).
+  Numerical validation confirms max diff < 1e-4 vs PyTorch.
 
 1×1 conv note:
   ops.conv2d fails for kernel=1 in this MAX version (layout_transform_RSCF_to_KNkni
@@ -106,8 +106,6 @@ def _conv2d(x, w_np: np.ndarray, b_np, stride, padding, device_ref):
         C_in = w_np.shape[2]
         C_out = w_np.shape[3]
         w_2d = ops.constant(w_np.reshape(C_in, C_out), device=device_ref)
-        dyn_H = x.shape[1]
-        dyn_W = x.shape[2]
         # Squeeze the batch=1 dim, do batched matmul [H, W, C_in] × [C_in, C_out],
         # then unsqueeze batch back.  This avoids reshape(-1, C_in) which requires
         # MAX to symbolically verify H*W*1 == H*W — which it can't always do.
@@ -123,90 +121,60 @@ def _conv2d(x, w_np: np.ndarray, b_np, stride, padding, device_ref):
     return out
 
 
-def _conv_transpose_2x(x, w_pt: np.ndarray, b_np, device_ref, output_padding: int = 0):
-    """Numerically-correct ConvTranspose2d stride=2, kernel=3, padding=1.
+def _conv_transpose_2x(x, w_pt: np.ndarray, b_np, device_ref):
+    """Numerically-correct ConvTranspose2d stride=2, kernel=3, padding=1, output_padding=1.
 
-    Equivalent to PyTorch ConvTranspose2d(C_in, C_out, kernel_size=3,
-    stride=2, padding=1, output_padding=output_padding, bias=...) for any
-    input [B, H, W, C_in].
+    Equivalent to PyTorch ConvTranspose2d(C_in, C_out, kernel_size=3, stride=2,
+    padding=1, output_padding=1, bias=...) for any input [B, H, W, C_in].
+    output_padding=1 means a trailing zero row/col is appended after each input
+    position, doubling the spatial dimensions: H → 2H, W → 2W.
 
-    Output shape:
-      output_padding=0: [B, 2H-1, 2W-1, C_out]  (default)
-      output_padding=1: [B, 2H,   2W,   C_out]   (RMVPE decoder uses this)
+    Output shape: [B, 2H, 2W, C_out]
 
     Implementation:
-      1. Zero-interleave H: insert one zero row after each input row,
-         giving [B,2H,W,C]; then optionally remove the last row (output_padding=0).
-      2. Zero-interleave W the same way via squeeze/transpose trick.
+      1. Zero-interleave H: insert one zero row after each input row (including
+         the last), giving [B, 2H, W, C].
+      2. Zero-interleave W the same way via squeeze/transpose trick: → [B, 2H, 2W, C].
       3. Regular conv2d with flipped weights and padding=1.
 
+    Shape trick: squeeze/unsqueeze handle the unit batch dim without reshape
+    element-count verification failures. Only reshape([H, 2, W, C] → [2H, W, C])
+    is needed, merging two leading dims where one is static 2 — MAX can verify
+    H*2 == 2H trivially. For W (static): same pattern after transposing W to front.
+
     Args:
-        x: NHWC input [B, H, W, C_in].
+        x: NHWC input [B, H, W, C_in].  B must be 1.
         w_pt: PyTorch ConvTranspose2d weight [C_in, C_out, kH, kW].
         b_np: Optional bias [C_out] or None.
         device_ref: MAX DeviceRef.
-        output_padding: 0 (default) or 1. Must match the PyTorch op being emulated.
 
     Returns:
-        TensorValue [B, 2H-1+output_padding, 2W-1+output_padding, C_out].
+        TensorValue [B, 2H, 2W, C_out].
     """
     C_in_val = w_pt.shape[0]   # Python int — number of input channels
-    _H = x.shape[1]   # dynamic symbolic dim
-    _W = x.shape[2]   # static symbolic dim (always 4, 7, 13, 25, or 49 in decoder)
+    _H = x.shape[1]   # dynamic symbolic dim (time axis)
+    _W = x.shape[2]   # static symbolic dim (freq axis; 4, 8, 16, 32, or 64 in decoder)
 
-    # Strategy: use squeeze/unsqueeze to handle the unit batch dim without
-    # problematic reshapes.  reshape([H, 2, W, C] → [2H, W, C]) only merges
-    # the first two dims (one of which is static 2), which MAX can verify.
-    # For W: transpose to put W first, apply the same H-interleave trick, transpose back.
-    #
-    # With output_padding=0: slice off the trailing zero (gives 2N-1 rows/cols).
-    # With output_padding=1: keep the trailing zero (gives 2N rows/cols).
-
-    # --- Step 1: Zero-interleave along H ---
-    # [1, H, W, C]
-    # → squeeze(0)      → [H, W, C]
-    # → unsqueeze(1)    → [H, 1, W, C]
-    # → pad axis 1 by 1 → [H, 2, W, C]   (trailing zero after each row)
-    # → reshape         → [2H, W, C]      (H*2 == 2H: MAX can verify)
-    # → unsqueeze(0)    → [1, 2H, W, C]
-    # → slice to 2H-1   → [1, 2H-1, W, C]  (if output_padding==0)
+    # --- Step 1: Zero-interleave along H → [1, 2H, W, C] ---
+    # squeeze batch-1, insert a 1-slot after each H row, pad it with a zero,
+    # reshape to merge H and the 2-slot, unsqueeze batch back.
     x_sq = ops.squeeze(x, 0)                                     # [H, W, C]
     x_ins = ops.unsqueeze(x_sq, 1)                               # [H, 1, W, C]
     x_padH = ops.pad(x_ins, [0, 0, 0, 1, 0, 0, 0, 0])          # [H, 2, W, C]
     x_r2 = ops.reshape(x_padH, [_H * 2, _W, C_in_val])         # [2H, W, C]
-    x_r2_b = ops.unsqueeze(x_r2, 0)                              # [1, 2H, W, C]
-    if output_padding == 0:
-        x_zi_H = ops.slice_tensor(                               # [1, 2H-1, W, C]
-            x_r2_b, [slice(None), slice(None, _H * 2 - 1), slice(None), slice(None)]
-        )
-        _H2 = x_zi_H.shape[1]   # 2H-1, dynamic
-    else:
-        x_zi_H = x_r2_b                                          # [1, 2H, W, C]
-        _H2 = x_zi_H.shape[1]   # 2H, dynamic
+    x_zi_H = ops.unsqueeze(x_r2, 0)                              # [1, 2H, W, C]
 
-    # --- Step 2: Zero-interleave along W ---
-    # [1, H2, W, C]
-    # → squeeze(0)            → [H2, W, C]
-    # → transpose(0, 1)       → [W, H2, C]
-    # → unsqueeze(1)          → [W, 1, H2, C]
-    # → pad axis 1 by 1       → [W, 2, H2, C]
-    # → reshape               → [2W, H2, C]     (W*2 == 2W, W static)
-    # → [optional] slice      → [2W-1, H2, C]   (if output_padding==0)
-    # → transpose(0, 1)       → [H2, 2W-1, C]
-    # → unsqueeze(0)          → [1, H2, 2W-1, C]
-    x_sq2 = ops.squeeze(x_zi_H, 0)                               # [H2, W, C]
-    x_t = ops.transpose(x_sq2, 0, 1)                             # [W, H2, C]
-    x_ins2 = ops.unsqueeze(x_t, 1)                               # [W, 1, H2, C]
-    x_padW = ops.pad(x_ins2, [0, 0, 0, 1, 0, 0, 0, 0])         # [W, 2, H2, C]
-    x_r4 = ops.reshape(x_padW, [_W * 2, _H2, C_in_val])        # [2W, H2, C]
-    if output_padding == 0:
-        x_zi_W = ops.slice_tensor(                               # [2W-1, H2, C]
-            x_r4, [slice(None, _W * 2 - 1), slice(None), slice(None)]
-        )
-    else:
-        x_zi_W = x_r4                                            # [2W, H2, C]
-    x_t2 = ops.transpose(x_zi_W, 0, 1)                           # [H2, 2W-?, C]
-    x_zi = ops.unsqueeze(x_t2, 0)                                 # [1, H2, 2W-?, C]
+    # --- Step 2: Zero-interleave along W → [1, 2H, 2W, C] ---
+    # Transpose to put W as the leading axis so the same reshape trick applies
+    # (W is static so W*2 == 2W is provable), then transpose back.
+    _H2 = x_zi_H.shape[1]   # 2H, dynamic
+    x_sq2 = ops.squeeze(x_zi_H, 0)                               # [2H, W, C]
+    x_t = ops.transpose(x_sq2, 0, 1)                             # [W, 2H, C]
+    x_ins2 = ops.unsqueeze(x_t, 1)                               # [W, 1, 2H, C]
+    x_padW = ops.pad(x_ins2, [0, 0, 0, 1, 0, 0, 0, 0])         # [W, 2, 2H, C]
+    x_r4 = ops.reshape(x_padW, [_W * 2, _H2, C_in_val])        # [2W, 2H, C]
+    x_t2 = ops.transpose(x_r4, 0, 1)                             # [2H, 2W, C]
+    x_zi = ops.unsqueeze(x_t2, 0)                                 # [1, 2H, 2W, C]
 
     # --- Step 3: Regular conv2d with flipped weights ---
     w_max = _pt_to_max_conv_transpose(w_pt)   # [kH, kW, C_in, C_out]
@@ -301,9 +269,7 @@ def build_unet_graph(
             # output shape: [1, 2H-1, 2W-1, up_co]
             up_w_pt = weights[f"dec.{L}.up.w"]  # PyTorch [C_in, C_out, kH, kW]
             up_b = weights.get(f"dec.{L}.up.b")
-            # RMVPE uses ConvTranspose2d(stride=2, kernel=3, padding=1, output_padding=1)
-            # which doubles spatial dims: H→2H, W→2W.
-            x = _conv_transpose_2x(x, up_w_pt, up_b, device_ref, output_padding=1)
+            x = _conv_transpose_2x(x, up_w_pt, up_b, device_ref)
 
             # BN after ConvTranspose
             if f"dec.{L}.up.scale" in weights:
@@ -318,7 +284,9 @@ def build_unet_graph(
             skip = skips[4 - L]
             dec_H = x.shape[1]
             dec_W = x.shape[2]
-            # Slice skip to decoder spatial (skip may be larger for odd-T inputs)
+            # Slice skip to decoder spatial size.  The skip is always >= decoder
+            # because encoder pools with floor division (T // 2^k) while the
+            # decoder doubles (2H), so dec_H <= skip_H for all T >= 1.
             skip = ops.slice_tensor(
                 skip,
                 [slice(None), slice(None, dec_H), slice(None, dec_W), slice(None)],

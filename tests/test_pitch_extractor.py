@@ -245,12 +245,16 @@ class TestUNetGraph:
         assert not np.isinf(out).any(), "Output contains Inf"
 
     def test_conv_transpose_numerically_equivalent(self):
-        """MAX ConvTranspose implementation matches PyTorch ConvTranspose2d numerically."""
+        """MAX ConvTranspose implementation matches PyTorch ConvTranspose2d numerically.
+
+        Both sides use stride=2, kernel=3, padding=1, output_padding=1 (the RMVPE
+        configuration).  Input H×W → output 2H×2W.
+        """
         import numpy as np
         import torch
         from max import engine
         from max.driver import CPU
-        from max.graph import Graph, TensorType, DeviceRef, ops, Dim
+        from max.graph import Graph, TensorType, DeviceRef
         from max.dtype import DType
         from models._rmvpe import _conv_transpose_2x
 
@@ -259,8 +263,10 @@ class TestUNetGraph:
         x_np = rng.standard_normal((B, H, W, C_in)).astype(np.float32)
         w_pt = rng.standard_normal((C_in, C_out, K, K)).astype(np.float32) * 0.1
 
-        # PyTorch reference: ConvTranspose2d(stride=2, padding=1, bias=False)
-        pt_conv = torch.nn.ConvTranspose2d(C_in, C_out, K, stride=2, padding=1, bias=False)
+        # PyTorch reference: output_padding=1 matches _conv_transpose_2x → output 2H×2W
+        pt_conv = torch.nn.ConvTranspose2d(
+            C_in, C_out, K, stride=2, padding=1, output_padding=1, bias=False
+        )
         pt_conv.weight.data = torch.from_numpy(w_pt)
         x_pt = torch.from_numpy(x_np.transpose(0, 3, 1, 2))  # NHWC → NCHW
         with torch.no_grad():
@@ -277,8 +283,6 @@ class TestUNetGraph:
         result = model.execute(x_np)
         max_out = (list(result.values())[0] if isinstance(result, dict) else result[0]).to_numpy()
 
-        # Align shapes: PyTorch with output_padding=(1,1) gives 2H, ours gives 2H-1
-        min_H = min(ref.shape[1], max_out.shape[1])
-        min_W = min(ref.shape[2], max_out.shape[2])
-        diff = np.abs(max_out[:, :min_H, :min_W, :] - ref[:, :min_H, :min_W, :]).max()
+        assert max_out.shape == ref.shape, f"Shape mismatch: MAX {max_out.shape} vs PyTorch {ref.shape}"
+        diff = np.abs(max_out - ref).max()
         assert diff < 1e-4, f"ConvTranspose diff {diff:.2e} exceeds tolerance"
