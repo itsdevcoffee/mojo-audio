@@ -360,7 +360,8 @@ class TestPitchPostProcessing:
     def test_to_hz_shape(self):
         """Salience [1, T, 360] -> Hz [T] float32."""
         from models._rmvpe import salience_to_hz
-        salience = np.random.rand(1, 100, 360).astype(np.float32)
+        rng = np.random.default_rng(10)
+        salience = rng.random((1, 100, 360)).astype(np.float32)
         hz = salience_to_hz(salience, threshold=0.03)
         assert hz.shape == (100,), f"Expected (100,) got {hz.shape}"
         assert hz.dtype == np.float32
@@ -377,9 +378,12 @@ class TestPitchPostProcessing:
             f"Voiced Hz out of range: min={voiced.min():.1f}, max={voiced.max():.1f}"
 
     def test_unvoiced_returns_zero(self):
-        """Low-salience frames must return 0 Hz."""
+        """Low-salience frames must return 0 Hz.
+
+        Logit of -5.0 -> sigmoid ~= 0.0067, well below threshold=0.03.
+        """
         from models._rmvpe import salience_to_hz
-        salience = np.full((1, 10, 360), 0.001, dtype=np.float32)
+        salience = np.full((1, 10, 360), -5.0, dtype=np.float32)
         hz = salience_to_hz(salience, threshold=0.03)
         assert (hz == 0).all(), f"Expected all zeros, got: {hz}"
 

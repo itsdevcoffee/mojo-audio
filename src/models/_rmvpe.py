@@ -364,7 +364,7 @@ def bigru_forward(x: np.ndarray, weights: dict, hidden_size: int = 256) -> np.nd
             w["gru.weight_ih_l0"], w["gru.weight_hh_l0"],
             w["gru.bias_ih_l0"],   w["gru.bias_hh_l0"],
         )
-        fwd_states.append(h_fwd)
+        fwd_states.append(h_fwd.copy())
 
     # Reverse pass (t=T-1 -> 0)
     h_rev = np.zeros((B, H), dtype=np.float32)
@@ -375,7 +375,7 @@ def bigru_forward(x: np.ndarray, weights: dict, hidden_size: int = 256) -> np.nd
             w["gru.weight_ih_l0_reverse"], w["gru.weight_hh_l0_reverse"],
             w["gru.bias_ih_l0_reverse"],   w["gru.bias_hh_l0_reverse"],
         )
-        rev_states[t] = h_rev
+        rev_states[t] = h_rev.copy()
 
     fwd_out = np.stack(fwd_states, axis=1)  # [B, T, H]
     rev_out = np.stack(rev_states, axis=1)  # [B, T, H]
@@ -410,23 +410,20 @@ def salience_to_hz(salience: np.ndarray, threshold: float = 0.03) -> np.ndarray:
     """Convert pitch salience [1, T, 360] to F0 Hz per frame [T].
 
     Uses weighted local average around the peak bin for sub-bin precision.
-    Frames where max salience < threshold are unvoiced (0 Hz).
+    Frames where sigmoid(peak logit) < threshold are unvoiced (0 Hz).
 
     Args:
         salience: [1, T, 360] float32 — raw logits from linear_output (pre-sigmoid).
-        threshold: sigmoid(logit) must exceed this to be voiced.
+        threshold: sigmoid probability at the peak bin must exceed this to be voiced.
 
     Returns:
         [T] float32 — F0 in Hz, 0.0 = unvoiced.
     """
-    logits = salience[0]  # [T, 360] — raw logits
-    prob = (1.0 / (1.0 + np.exp(-logits.astype(np.float64)))).astype(np.float32)  # [T, 360]
+    prob = _sigmoid(salience[0])  # [T, 360] — sigmoid probabilities
     T = prob.shape[0]
 
     center_bin = np.argmax(prob, axis=-1)  # [T]
-    # Threshold on raw logit at the peak bin — matches RMVPE voiced/unvoiced decision.
-    # sigmoid(0.03) ≈ 0.5075, so a threshold of 0.03 on the logit is intentionally strict.
-    max_logit = logits[np.arange(T), center_bin]  # [T]
+    max_prob = prob[np.arange(T), center_bin]  # [T]
 
     bin_idx = np.arange(360, dtype=np.float32)
     weighted_bins = np.zeros(T, dtype=np.float32)
@@ -439,5 +436,5 @@ def salience_to_hz(salience: np.ndarray, threshold: float = 0.03) -> np.ndarray:
         weighted_bins[t] = (b_t * w_t).sum() / w_sum if w_sum > 1e-8 else float(center_bin[t])
 
     hz = _bins_to_hz(weighted_bins)
-    hz[max_logit < threshold] = 0.0
+    hz[max_prob < threshold] = 0.0
     return hz
