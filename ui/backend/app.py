@@ -38,6 +38,7 @@ if str(REPO_ROOT / "src") not in sys.path:
 
 ALLOWED_BLAS_BACKENDS = frozenset(["mkl", "openblas"])
 BENCHMARK_TIMEOUT_SECONDS = 120
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
 
 # Serve static files (relative to ui directory)
 app.mount("/static", StaticFiles(directory=str(UI_ROOT / "static")), name="static")
@@ -229,13 +230,22 @@ async def analyze_audio(file: UploadFile = File(...)):
     """
     Accept a WAV file, process via mojo-audio DSP, return visualization data.
     """
+    if not file.filename or not file.filename.lower().endswith(".wav"):
+        raise HTTPException(status_code=400, detail="Only WAV files are accepted")
+
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 100 MB)")
+
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        content = await file.read()
         tmp.write(content)
         tmp_path = tmp.name
 
     try:
-        return _process_audio(tmp_path)
+        import asyncio
+        return await asyncio.to_thread(_process_audio, tmp_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Audio processing failed: {e}")
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
@@ -245,7 +255,7 @@ def _process_audio(wav_path: str) -> dict:
     from wav_io import read_wav
     from resample import resample_to_16k
     from vad import get_voice_segments
-    from audio import mel_spectrogram, hann_window
+    from audio import mel_spectrogram
 
     # 1. Load audio
     samples, sample_rate = read_wav(wav_path)
