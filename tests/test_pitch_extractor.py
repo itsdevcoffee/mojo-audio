@@ -243,3 +243,42 @@ class TestUNetGraph:
         out = (list(result.values())[0] if isinstance(result, dict) else result[0]).to_numpy()
         assert not np.isnan(out).any(), "Output contains NaN"
         assert not np.isinf(out).any(), "Output contains Inf"
+
+    def test_conv_transpose_numerically_equivalent(self):
+        """MAX ConvTranspose implementation matches PyTorch ConvTranspose2d numerically."""
+        import numpy as np
+        import torch
+        from max import engine
+        from max.driver import CPU
+        from max.graph import Graph, TensorType, DeviceRef, ops, Dim
+        from max.dtype import DType
+        from models._rmvpe import _conv_transpose_2x
+
+        rng = np.random.default_rng(7)
+        B, H, W, C_in, C_out, K = 1, 8, 8, 4, 8, 3
+        x_np = rng.standard_normal((B, H, W, C_in)).astype(np.float32)
+        w_pt = rng.standard_normal((C_in, C_out, K, K)).astype(np.float32) * 0.1
+
+        # PyTorch reference: ConvTranspose2d(stride=2, padding=1, bias=False)
+        pt_conv = torch.nn.ConvTranspose2d(C_in, C_out, K, stride=2, padding=1, bias=False)
+        pt_conv.weight.data = torch.from_numpy(w_pt)
+        x_pt = torch.from_numpy(x_np.transpose(0, 3, 1, 2))  # NHWC → NCHW
+        with torch.no_grad():
+            ref = pt_conv(x_pt).numpy().transpose(0, 2, 3, 1)  # NCHW → NHWC
+
+        # MAX implementation via zero-interleave + conv
+        cpu_ref = DeviceRef.CPU()
+        with Graph("ct_test", input_types=[TensorType(DType.float32, [B, H, W, C_in], cpu_ref)]) as g:
+            x = g.inputs[0]
+            out = _conv_transpose_2x(x, w_pt, None, cpu_ref)
+            g.output(out)
+
+        model = engine.InferenceSession(devices=[CPU()]).load(g)
+        result = model.execute(x_np)
+        max_out = (list(result.values())[0] if isinstance(result, dict) else result[0]).to_numpy()
+
+        # Align shapes: PyTorch with output_padding=(1,1) gives 2H, ours gives 2H-1
+        min_H = min(ref.shape[1], max_out.shape[1])
+        min_W = min(ref.shape[2], max_out.shape[2])
+        diff = np.abs(max_out[:, :min_H, :min_W, :] - ref[:, :min_H, :min_W, :]).max()
+        assert diff < 1e-4, f"ConvTranspose diff {diff:.2e} exceeds tolerance"
