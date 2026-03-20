@@ -404,3 +404,127 @@ class TestHiFiGANGraph:
 
         assert not np.any(np.isnan(out_np)), "Output contains NaN values"
         assert not np.any(np.isinf(out_np)), "Output contains Inf values"
+
+
+def _make_sr_config(sr, upsample_rates, upsample_kernel_sizes):
+    """Build a full HiFiGAN config dict for a given sample rate."""
+    return {
+        "inter_channels": 192,
+        "upsample_rates": upsample_rates,
+        "upsample_initial_channel": 512,
+        "upsample_kernel_sizes": upsample_kernel_sizes,
+        "resblock_kernel_sizes": [3, 7, 11],
+        "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+        "sr": sr,
+        "hop_length": reduce(operator.mul, upsample_rates, 1),
+    }
+
+
+# Sample-rate configs: (upsample_rates, upsample_kernel_sizes)
+SR_CONFIGS = {
+    32000: ([10, 8, 2, 2], [20, 16, 4, 4]),
+    40000: ([10, 10, 2, 2], [16, 16, 4, 4]),
+    48000: ([12, 10, 2, 2], [24, 20, 4, 4]),
+}
+
+
+class TestNSFHiFiGAN:
+    """Tests for the public NSFHiFiGAN class (synthesize pipeline)."""
+
+    @pytest.fixture(scope="class")
+    def vocoder_48k(self):
+        from models.hifigan import NSFHiFiGAN
+        rng = np.random.default_rng(42)
+        config = _make_sr_config(48000, *SR_CONFIGS[48000])
+        weights = _make_full_hifigan_weights(rng, config)
+        return NSFHiFiGAN._from_weights(weights, config, device="cpu", batch_size=1)
+
+    @pytest.fixture(scope="class")
+    def vocoder_40k(self):
+        from models.hifigan import NSFHiFiGAN
+        rng = np.random.default_rng(42)
+        config = _make_sr_config(40000, *SR_CONFIGS[40000])
+        weights = _make_full_hifigan_weights(rng, config)
+        return NSFHiFiGAN._from_weights(weights, config, device="cpu", batch_size=1)
+
+    @pytest.fixture(scope="class")
+    def vocoder_32k(self):
+        from models.hifigan import NSFHiFiGAN
+        rng = np.random.default_rng(42)
+        config = _make_sr_config(32000, *SR_CONFIGS[32000])
+        weights = _make_full_hifigan_weights(rng, config)
+        return NSFHiFiGAN._from_weights(weights, config, device="cpu", batch_size=1)
+
+    @pytest.fixture(scope="class")
+    def vocoder_48k_batch2(self):
+        from models.hifigan import NSFHiFiGAN
+        rng = np.random.default_rng(42)
+        config = _make_sr_config(48000, *SR_CONFIGS[48000])
+        weights = _make_full_hifigan_weights(rng, config)
+        return NSFHiFiGAN._from_weights(weights, config, device="cpu", batch_size=2)
+
+    def test_synthesize_shape_48k(self, vocoder_48k):
+        """latents [1, 192, 10] + f0 [1, 10] -> output [1, 4800]."""
+        rng = np.random.default_rng(99)
+        T = 10
+        latents = rng.standard_normal((1, 192, T)).astype(np.float32) * 0.1
+        f0 = rng.uniform(100, 400, (1, T)).astype(np.float32)
+
+        audio = vocoder_48k.synthesize(latents, f0)
+        assert audio.shape == (1, 4800), f"Expected (1, 4800) got {audio.shape}"
+
+    def test_synthesize_shape_40k(self, vocoder_40k):
+        """latents [1, 192, 10] + f0 [1, 10] -> output [1, 4000]."""
+        rng = np.random.default_rng(99)
+        T = 10
+        latents = rng.standard_normal((1, 192, T)).astype(np.float32) * 0.1
+        f0 = rng.uniform(100, 400, (1, T)).astype(np.float32)
+
+        audio = vocoder_40k.synthesize(latents, f0)
+        assert audio.shape == (1, 4000), f"Expected (1, 4000) got {audio.shape}"
+
+    def test_synthesize_shape_32k(self, vocoder_32k):
+        """latents [1, 192, 10] + f0 [1, 10] -> output [1, 3200]."""
+        rng = np.random.default_rng(99)
+        T = 10
+        latents = rng.standard_normal((1, 192, T)).astype(np.float32) * 0.1
+        f0 = rng.uniform(100, 400, (1, T)).astype(np.float32)
+
+        audio = vocoder_32k.synthesize(latents, f0)
+        assert audio.shape == (1, 3200), f"Expected (1, 3200) got {audio.shape}"
+
+    def test_synthesize_not_nan(self, vocoder_48k):
+        """Random input with small magnitudes produces no NaN/Inf."""
+        rng = np.random.default_rng(123)
+        T = 10
+        latents = rng.standard_normal((1, 192, T)).astype(np.float32) * 0.1
+        f0 = rng.uniform(100, 400, (1, T)).astype(np.float32)
+
+        audio = vocoder_48k.synthesize(latents, f0)
+        assert not np.any(np.isnan(audio)), "Output contains NaN values"
+        assert not np.any(np.isinf(audio)), "Output contains Inf values"
+
+    def test_synthesize_unvoiced_not_nan(self, vocoder_48k):
+        """f0 = zeros (fully unvoiced) produces no NaN/Inf."""
+        rng = np.random.default_rng(456)
+        T = 10
+        latents = rng.standard_normal((1, 192, T)).astype(np.float32) * 0.1
+        f0 = np.zeros((1, T), dtype=np.float32)
+
+        audio = vocoder_48k.synthesize(latents, f0)
+        assert not np.any(np.isnan(audio)), "Output contains NaN values"
+        assert not np.any(np.isinf(audio)), "Output contains Inf values"
+
+    @pytest.mark.xfail(
+        reason="conv_transpose_1d uses squeeze(axis=0) which requires B=1; batch>1 needs graph builder update",
+        raises=ValueError,
+    )
+    def test_synthesize_batch2_shape(self, vocoder_48k_batch2):
+        """batch_size=2: latents [2, 192, 10] + f0 [2, 10] -> output [2, 4800]."""
+        rng = np.random.default_rng(789)
+        T = 10
+        latents = rng.standard_normal((2, 192, T)).astype(np.float32) * 0.1
+        f0 = rng.uniform(100, 400, (2, T)).astype(np.float32)
+
+        audio = vocoder_48k_batch2.synthesize(latents, f0)
+        assert audio.shape == (2, 4800), f"Expected (2, 4800) got {audio.shape}"
