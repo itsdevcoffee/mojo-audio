@@ -41,21 +41,23 @@ async function runDemoBenchmark(config, options = {}) {
 async function runServerBenchmark(config, options = {}) {
     const { onProgress } = options;
 
-    const body = JSON.stringify({
+    const payload = {
         duration: config.duration,
         n_fft: config.n_fft,
         hop_length: config.hop_length || 160,
         n_mels: config.n_mels || 80,
         iterations: config.iterations,
         blas_backend: config.blas_backend
-    });
-
-    const fetchOpts = {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-        signal: AbortSignal.timeout(AppConfig.server.timeout)
     };
+
+    function makeFetchOpts() {
+        return {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(AppConfig.server.timeout)
+        };
+    }
 
     try {
         // Phase 1: Run mojo-audio
@@ -63,7 +65,7 @@ async function runServerBenchmark(config, options = {}) {
             onProgress({ progress: 0.1, message: 'Running mojo-audio benchmark...' });
         }
 
-        const mojoRes = await fetch(AppConfig.api.endpoints.benchmarkMojo, fetchOpts);
+        const mojoRes = await fetch(AppConfig.api.endpoints.benchmarkMojo, makeFetchOpts());
         if (!mojoRes.ok) {
             const error = await mojoRes.json();
             throw new Error(error.detail || 'Mojo benchmark failed');
@@ -75,7 +77,7 @@ async function runServerBenchmark(config, options = {}) {
             onProgress({ progress: 0.5, message: 'Running librosa benchmark...' });
         }
 
-        const librosaRes = await fetch(AppConfig.api.endpoints.benchmarkLibrosa, fetchOpts);
+        const librosaRes = await fetch(AppConfig.api.endpoints.benchmarkLibrosa, makeFetchOpts());
         if (!librosaRes.ok) {
             const error = await librosaRes.json();
             throw new Error(error.detail || 'Librosa benchmark failed');
