@@ -378,11 +378,14 @@ def build_hifigan_graph(weights, config, device="cpu", batch_size=1):
             # Add noise to upsampled signal
             x = ops.add(x, noise)
 
-            # 3 ResBlocks (one per kernel size)
+            # 3 ResBlocks (one per kernel size) run in PARALLEL, then average.
+            # This matches PyTorch RVC: xs = sum(resblock_k(x) for k) / num_kernels
+            num_kernels = len(resblock_kernel_sizes)
+            rb_outputs = []
             for k_idx, (rk, rd) in enumerate(
                 zip(resblock_kernel_sizes, resblock_dilation_sizes)
             ):
-                rb_idx = i * len(resblock_kernel_sizes) + k_idx
+                rb_idx = i * num_kernels + k_idx
                 rb_weights = {}
                 for j in range(len(rd)):
                     rb_weights[f"convs1.{j}.weight"] = weights[
@@ -397,7 +400,13 @@ def build_hifigan_graph(weights, config, device="cpu", batch_size=1):
                     rb_weights[f"convs2.{j}.bias"] = weights.get(
                         f"resblocks.{rb_idx}.convs2.{j}.bias"
                     )
-                x = build_resblock(x, rb_weights, dilations=rd, device_ref=dev)
+                rb_outputs.append(build_resblock(x, rb_weights, dilations=rd, device_ref=dev))
+            # Average the parallel ResBlock outputs
+            x = rb_outputs[0]
+            for rb_out in rb_outputs[1:]:
+                x = ops.add(x, rb_out)
+            inv_k = ops.constant(np.array(1.0 / num_kernels, dtype=np.float32), device=dev)
+            x = ops.mul(x, inv_k)
 
             ch = ch_next
 
