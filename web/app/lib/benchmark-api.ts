@@ -35,8 +35,8 @@ export const DEFAULT_CONFIG: BenchmarkConfig = {
   blas_backend: "mkl",
 };
 
-export async function runComparison(config: BenchmarkConfig): Promise<ComparisonResult> {
-  const res = await fetch("/api/benchmark/both", {
+async function runSingle(endpoint: string, config: BenchmarkConfig): Promise<BenchmarkResult> {
+  const res = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(config),
@@ -46,4 +46,30 @@ export async function runComparison(config: BenchmarkConfig): Promise<Comparison
     throw new Error(err.detail || `HTTP ${res.status}`);
   }
   return res.json();
+}
+
+export type BenchmarkPhase = "idle" | "mojo" | "librosa" | "done";
+
+export async function runComparison(
+  config: BenchmarkConfig,
+  onPhase: (phase: BenchmarkPhase) => void,
+): Promise<ComparisonResult> {
+  onPhase("mojo");
+  const mojo = await runSingle("/api/benchmark/mojo", config);
+
+  onPhase("librosa");
+  const librosa = await runSingle("/api/benchmark/librosa", config);
+
+  const speedup_factor = librosa.avg_time_ms / mojo.avg_time_ms;
+  const faster_percentage =
+    ((librosa.avg_time_ms - mojo.avg_time_ms) / librosa.avg_time_ms) * 100;
+
+  onPhase("done");
+  return {
+    mojo,
+    librosa,
+    speedup_factor: Math.round(speedup_factor * 100) / 100,
+    faster_percentage: Math.round(faster_percentage * 10) / 10,
+    mojo_is_faster: mojo.avg_time_ms < librosa.avg_time_ms,
+  };
 }

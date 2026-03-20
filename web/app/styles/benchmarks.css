@@ -139,3 +139,27 @@
 .result-card__bar-fill--mojo {
   background: var(--accent-gradient);
 }
+
+/* Benchmark progress */
+.benchmark-progress {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+}
+
+.benchmark-progress__bar {
+  width: 100%;
+  height: 4px;
+  background: rgba(80, 200, 150, 0.06);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.benchmark-progress__fill {
+  height: 100%;
+  background: var(--accent-gradient);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}

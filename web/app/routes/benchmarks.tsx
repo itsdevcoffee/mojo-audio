@@ -5,26 +5,37 @@ import {
   DEFAULT_CONFIG,
   runComparison,
   type BenchmarkConfig,
+  type BenchmarkPhase,
   type ComparisonResult,
 } from "../lib/benchmark-api";
 import "../styles/benchmarks.css";
+
+const PHASE_LABELS: Record<BenchmarkPhase, string> = {
+  idle: "",
+  mojo: "Running mojo-audio...",
+  librosa: "Running librosa...",
+  done: "Done",
+};
 
 export default function Benchmarks() {
   const [config, setConfig] = useState<BenchmarkConfig>(DEFAULT_CONFIG);
   const [result, setResult] = useState<ComparisonResult | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [phase, setPhase] = useState<BenchmarkPhase>("idle");
   const [error, setError] = useState<string | null>(null);
 
   async function handleRun() {
     setIsRunning(true);
     setError(null);
+    setResult(null);
     try {
-      const res = await runComparison(config);
+      const res = await runComparison(config, setPhase);
       setResult(res);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setIsRunning(false);
+      setPhase("idle");
     }
   }
 
@@ -40,6 +51,18 @@ export default function Benchmarks() {
       </div>
 
       <ConfigCard config={config} onChange={setConfig} onRun={handleRun} isRunning={isRunning} />
+
+      {isRunning && (
+        <div className="benchmark-progress">
+          <div className="benchmark-progress__bar">
+            <div
+              className="benchmark-progress__fill"
+              style={{ width: phase === "mojo" ? "33%" : phase === "librosa" ? "66%" : "100%" }}
+            />
+          </div>
+          <span className="panel-meta">{PHASE_LABELS[phase]}</span>
+        </div>
+      )}
 
       {error && (
         <div style={{ padding: 16, color: "#ff6060", textAlign: "center" }}>
