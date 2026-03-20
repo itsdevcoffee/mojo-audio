@@ -145,14 +145,21 @@ def _dilate_kernel(w_np: np.ndarray, dilation: int) -> np.ndarray:
 
 
 def conv1d(x, w_np, b_np, dilation=1, device_ref=None):
-    """Conv1d via Conv2d with NHWC layout and W=1.
+    """Conv1d via im2col + matmul, avoiding ops.conv2d (broken for C_in >= 8).
 
-    Input:  [B, T, 1, C_in]
-    Weight: PyTorch format [C_out, C_in, K] -> MAX RSCF [K_eff, 1, C_in, C_out]
-    Output: [B, T, 1, C_out] (same T due to dilated padding)
+    Input:  [B, T, 1, C_in]  (NHWC with W=1)
+    Weight: PyTorch format [C_out, C_in, K]
+    Output: [B, T, 1, C_out] (same T due to dilated "same" padding)
 
-    Dilation is handled by expanding the kernel with zero-insertion, since
-    MAX Engine does not support non-unit dilation in conv2d.
+    Approach:
+      1. Dilate kernel (zero-insertion for dilation > 1)
+      2. Pad input along T for "same" output length
+      3. im2col: extract K_eff shifted slices, concat → [B, T, 1, K_eff*C_in]
+      4. matmul with reshaped weight → [B, T, 1, C_out]
+      5. Add bias
+
+    This replaces the previous ops.conv2d implementation which produces
+    incorrect results when C_in >= 8 (modular/modular#6248).
 
     Args:
         x: NHWC input [B, T, 1, C_in].
@@ -164,7 +171,7 @@ def conv1d(x, w_np, b_np, dilation=1, device_ref=None):
     Returns:
         TensorValue [B, T, 1, C_out].
     """
-    K = w_np.shape[2]
+    C_out, C_in, K = w_np.shape
 
     # Expand kernel for dilation (no-op when dilation=1)
     w_dilated = _dilate_kernel(w_np, dilation)
@@ -173,19 +180,58 @@ def conv1d(x, w_np, b_np, dilation=1, device_ref=None):
     # "same" padding: ensures output T == input T
     pad = (K_eff - 1) // 2
 
-    # Convert PyTorch [C_out, C_in, K_eff] to MAX RSCF [K_eff, 1, C_in, C_out]
-    w_max = np.transpose(w_dilated, (2, 1, 0))[:, np.newaxis, :, :]
-    w_const = ops.constant(w_max, device=device_ref)
+    # Save original symbolic T before padding
+    orig_T = x.shape[1]
 
-    # conv2d padding: (top, bottom, left, right) for NHWC [B, H, W, C]
-    # H=T axis gets the padding, W=1 axis gets none
-    out = ops.conv2d(
-        x, w_const, stride=(1, 1), dilation=(1, 1), padding=(pad, pad, 0, 0)
-    )
+    # --- Step 1: Pad input along T (dim 1) ---
+    # ops.pad format for 4D: [d0_bef, d0_aft, d1_bef, d1_aft, d2_bef, d2_aft, d3_bef, d3_aft]
+    # For [B, T, 1, C_in]: d1 = T axis.
+    if pad > 0:
+        x_pad = ops.pad(x, [0, 0, pad, pad, 0, 0, 0, 0])
+    else:
+        x_pad = x
+    # x_pad: [B, T + 2*pad, 1, C_in]
+
+    # --- Step 2: im2col via shifted slices ---
+    # For each kernel position k, slice x_pad[:, k:k+T, :, :].
+    # orig_T is symbolic (dynamic), so we use it in slice bounds.
+    slices = []
+    for k in range(K_eff):
+        s = ops.slice_tensor(
+            x_pad,
+            [slice(None), slice(k, k + orig_T), slice(None), slice(None)],
+        )
+        slices.append(s)
+
+    # Concat along channel dim: [B, T, 1, K_eff * C_in]
+    if K_eff == 1:
+        x_cols = slices[0]
+    else:
+        x_cols = ops.concat(slices, axis=3)
+
+    # --- Step 3: Reshape weight for matmul ---
+    # w_dilated: [C_out, C_in, K_eff]
+    # Need w_mat[k*C_in + c, c_out] = w_dilated[c_out, c, k]
+    # => transpose to [K_eff, C_in, C_out], reshape to [K_eff*C_in, C_out]
+    w_mat = np.transpose(w_dilated, (2, 1, 0)).reshape(K_eff * C_in, C_out)
+    w_const = ops.constant(w_mat.astype(np.float32), device=device_ref)
+
+    # --- Step 4: matmul ---
+    # x_cols: [B, T, 1, K_eff*C_in], squeeze W dim -> [B, T, K_eff*C_in]
+    x_cols_sq = ops.squeeze(x_cols, 2)  # [B, T, K_eff*C_in]
+    out = ops.matmul(x_cols_sq, w_const)  # [B, T, C_out]
+
+    # --- Step 5: Reshape back to NHWC ---
+    out = ops.unsqueeze(out, 2)  # [B, T, 1, C_out]
 
     if b_np is not None:
         b = ops.constant(b_np.reshape(1, 1, 1, -1), device=device_ref)
         out = ops.add(out, b)
+
+    # Rebind output to match input's symbolic shape — the im2col slicing creates
+    # new symbolic dims that MAX can't prove equal to the original Dim("T").
+    # Without this, ResBlock residual ops.add(x, residual) fails compilation.
+    out = ops.rebind(out, x.shape, message="conv1d: reconcile T dim after im2col")
 
     return out
 
