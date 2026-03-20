@@ -139,7 +139,7 @@ class PitchExtractor:
         Returns:
             [T_frames] float32 — F0 in Hz, 0.0 = unvoiced. ~100 frames/second.
         """
-        from max.driver import Accelerator, Tensor
+        from max.driver import Accelerator, Buffer
         from ._rmvpe import bigru_forward, linear_output, salience_to_hz
 
         # Step 1: mel [1, N] → [1, 1, T, 128]
@@ -150,7 +150,7 @@ class PitchExtractor:
 
         # Step 3: U-Net MAX Graph [1, T, 128, 1] → [1, T, 384]
         if isinstance(self._device, Accelerator):
-            inp = Tensor.from_numpy(mel_nhwc).to(self._device)
+            inp = Buffer.from_numpy(mel_nhwc).to(self._device)
         else:
             inp = mel_nhwc
         result = self._unet_model.execute(inp)

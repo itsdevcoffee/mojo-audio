@@ -300,7 +300,7 @@ class AudioEncoder:
             Float32 numpy array, shape [B, time_frames, 768].
             For 1s audio at batch=1: [1, 49, 768].
         """
-        from max.driver import Accelerator, Tensor
+        from max.driver import Accelerator, Buffer
 
         B = audio.shape[0]
         if B != self._batch_size:
@@ -314,7 +314,7 @@ class AudioEncoder:
 
         # Transfer to GPU if needed
         if isinstance(self._device, Accelerator):
-            inp = Tensor.from_numpy(audio_in).to(self._device)
+            inp = Buffer.from_numpy(audio_in).to(self._device)
         else:
             inp = audio_in
 
@@ -370,7 +370,7 @@ class AudioEncoder:
 
             # Graph 2: Transformer Blocks → [1, T, 768]
             if isinstance(self._device, Accelerator):
-                feat_in = Tensor.from_numpy(np.ascontiguousarray(features_np)).to(self._device)
+                feat_in = Buffer.from_numpy(np.ascontiguousarray(features_np)).to(self._device)
             else:
                 feat_in = np.ascontiguousarray(features_np)
             result2 = self._model2.execute(feat_in)

@@ -128,15 +128,15 @@ struct Complex(Copyable, Movable):
         self.real = real
         self.imag = imag
 
-    fn __copyinit__(out self, existing: Self):
+    fn __copyinit__(out self, copy: Self):
         """Copy constructor."""
-        self.real = existing.real
-        self.imag = existing.imag
+        self.real = copy.real
+        self.imag = copy.imag
 
-    fn __moveinit__(out self, deinit existing: Self):
+    fn __moveinit__(out self, deinit take: Self):
         """Move constructor."""
-        self.real = existing.real
-        self.imag = existing.imag
+        self.real = take.real
+        self.imag = take.imag
 
     @always_inline
     fn __add__(self, other: Complex) -> Complex:
@@ -201,11 +201,11 @@ struct ComplexArray(Movable):
             self.real.append(real_data[i])
             self.imag.append(0.0)
 
-    fn __moveinit__(out self, deinit existing: Self):
+    fn __moveinit__(out self, deinit take: Self):
         """Move constructor."""
-        self.size = existing.size
-        self.real = existing.real^
-        self.imag = existing.imag^
+        self.size = take.size
+        self.real = take.real^
+        self.imag = take.imag^
 
     @always_inline
     fn get(self, idx: Int) -> Complex:
@@ -252,11 +252,11 @@ struct TwiddleFactorsSoA(Movable):
             self.real.append(Float32(cos(angle)))
             self.imag.append(Float32(sin(angle)))
 
-    fn __moveinit__(out self, deinit existing: Self):
+    fn __moveinit__(out self, deinit take: Self):
         """Move constructor."""
-        self.size = existing.size
-        self.real = existing.real^
-        self.imag = existing.imag^
+        self.size = take.size
+        self.real = take.real^
+        self.imag = take.imag^
 
     @always_inline
     fn get(self, idx: Int) -> Complex:
@@ -370,19 +370,19 @@ struct Radix4TwiddleCache(Movable):
             offset += stride
             stride *= 4
 
-    fn __moveinit__(out self, deinit existing: Self):
+    fn __moveinit__(out self, deinit take: Self):
         """Move constructor - transfers ownership of aligned memory."""
-        self.N = existing.N
-        self.num_stages = existing.num_stages
-        self.total_size = existing.total_size
-        self.w1_real = existing.w1_real
-        self.w1_imag = existing.w1_imag
-        self.w2_real = existing.w2_real
-        self.w2_imag = existing.w2_imag
-        self.w3_real = existing.w3_real
-        self.w3_imag = existing.w3_imag
-        self.stage_offsets = existing.stage_offsets^
-        self.stage_strides = existing.stage_strides^
+        self.N = take.N
+        self.num_stages = take.num_stages
+        self.total_size = take.total_size
+        self.w1_real = take.w1_real
+        self.w1_imag = take.w1_imag
+        self.w2_real = take.w2_real
+        self.w2_imag = take.w2_imag
+        self.w3_real = take.w3_real
+        self.w3_imag = take.w3_imag
+        self.stage_offsets = take.stage_offsets^
+        self.stage_strides = take.stage_strides^
 
     fn __del__(deinit self):
         """Destructor - frees aligned memory."""
@@ -2041,14 +2041,14 @@ struct SplitRadixCache(Movable):
             self.twiddle3_real[k] = Float32(cos(angle3))
             self.twiddle3_imag[k] = Float32(sin(angle3))
 
-    fn __moveinit__(out self, deinit existing: Self):
+    fn __moveinit__(out self, deinit take: Self):
         """Move constructor."""
-        self.N = existing.N
-        self.log2_N = existing.log2_N
-        self.twiddle_real = existing.twiddle_real
-        self.twiddle_imag = existing.twiddle_imag
-        self.twiddle3_real = existing.twiddle3_real
-        self.twiddle3_imag = existing.twiddle3_imag
+        self.N = take.N
+        self.log2_N = take.log2_N
+        self.twiddle_real = take.twiddle_real
+        self.twiddle_imag = take.twiddle_imag
+        self.twiddle3_real = take.twiddle3_real
+        self.twiddle3_imag = take.twiddle3_imag
 
     fn __del__(deinit self):
         """Destructor - frees aligned memory."""
@@ -2474,15 +2474,15 @@ struct FourStepCache(Movable):
         self.r4_cache_n1 = Radix4TwiddleCache(self.N1)
         self.r4_cache_n2 = Radix4TwiddleCache(self.N2)
 
-    fn __moveinit__(out self, deinit existing: Self):
+    fn __moveinit__(out self, deinit take: Self):
         """Move constructor."""
-        self.N = existing.N
-        self.N1 = existing.N1
-        self.N2 = existing.N2
-        self.twiddle_real = existing.twiddle_real
-        self.twiddle_imag = existing.twiddle_imag
-        self.r4_cache_n1 = existing.r4_cache_n1^
-        self.r4_cache_n2 = existing.r4_cache_n2^
+        self.N = take.N
+        self.N1 = take.N1
+        self.N2 = take.N2
+        self.twiddle_real = take.twiddle_real
+        self.twiddle_imag = take.twiddle_imag
+        self.r4_cache_n1 = take.r4_cache_n1^
+        self.r4_cache_n2 = take.r4_cache_n2^
 
     fn __del__(deinit self):
         """Destructor - frees aligned memory."""
@@ -2724,14 +2724,14 @@ struct RFFTCache(Movable):
                 self.half_twiddles.real[i] = self.full_twiddles.real[idx]
                 self.half_twiddles.imag[i] = self.full_twiddles.imag[idx]
 
-    fn __moveinit__(out self, deinit existing: Self):
+    fn __moveinit__(out self, deinit take: Self):
         """Move constructor."""
-        self.fft_size = existing.fft_size
-        self.half_size = existing.half_size
-        self.quarter_size = existing.quarter_size
-        self.is_power_of_4 = existing.is_power_of_4
-        self.half_twiddles = existing.half_twiddles^
-        self.full_twiddles = existing.full_twiddles^
+        self.fft_size = take.fft_size
+        self.half_size = take.half_size
+        self.quarter_size = take.quarter_size
+        self.is_power_of_4 = take.is_power_of_4
+        self.half_twiddles = take.half_twiddles^
+        self.full_twiddles = take.full_twiddles^
 
 
 fn rfft_cached(
@@ -3239,19 +3239,19 @@ struct SparseFilter(Copyable, Movable):
         self.end_idx = end
         self.weights = List[Float32]()
 
-    fn __copyinit__(out self, existing: Self):
+    fn __copyinit__(out self, copy: Self):
         """Copy constructor."""
-        self.start_idx = existing.start_idx
-        self.end_idx = existing.end_idx
+        self.start_idx = copy.start_idx
+        self.end_idx = copy.end_idx
         self.weights = List[Float32]()
-        for i in range(len(existing.weights)):
-            self.weights.append(existing.weights[i])
+        for i in range(len(copy.weights)):
+            self.weights.append(copy.weights[i])
 
-    fn __moveinit__(out self, deinit existing: Self):
+    fn __moveinit__(out self, deinit take: Self):
         """Move constructor."""
-        self.start_idx = existing.start_idx
-        self.end_idx = existing.end_idx
-        self.weights = existing.weights^
+        self.start_idx = take.start_idx
+        self.end_idx = take.end_idx
+        self.weights = take.weights^
 
 
 fn create_sparse_mel_filterbank(

@@ -107,15 +107,15 @@ struct Complex(Copyable, Movable):
         self.real = real
         self.imag = imag
 
-    fn __copyinit__(out self, existing: Self):
+    fn __copyinit__(out self, copy: Self):
         """Copy constructor."""
-        self.real = existing.real
-        self.imag = existing.imag
+        self.real = copy.real
+        self.imag = copy.imag
 
-    fn __moveinit__(out self, deinit existing: Self):
+    fn __moveinit__(out self, deinit take: Self):
         """Move constructor."""
-        self.real = existing.real
-        self.imag = existing.imag
+        self.real = take.real
+        self.imag = take.imag
 
     @always_inline
     fn __add__(self, other: Complex) -> Complex:
@@ -785,17 +785,17 @@ struct SparseFilter(Copyable, Movable):
         self.end_idx = end
         self.weights = List[Float32]()
 
-    fn __copyinit__(out self, existing: Self):
-        self.start_idx = existing.start_idx
-        self.end_idx = existing.end_idx
+    fn __copyinit__(out self, copy: Self):
+        self.start_idx = copy.start_idx
+        self.end_idx = copy.end_idx
         self.weights = List[Float32]()
-        for i in range(len(existing.weights)):
-            self.weights.append(existing.weights[i])
+        for i in range(len(copy.weights)):
+            self.weights.append(copy.weights[i])
 
-    fn __moveinit__(out self, deinit existing: Self):
-        self.start_idx = existing.start_idx
-        self.end_idx = existing.end_idx
-        self.weights = existing.weights^
+    fn __moveinit__(out self, deinit take: Self):
+        self.start_idx = take.start_idx
+        self.end_idx = take.end_idx
+        self.weights = take.weights^
 
 fn create_sparse_mel_filterbank(
     filterbank: List[List[Float32]]
