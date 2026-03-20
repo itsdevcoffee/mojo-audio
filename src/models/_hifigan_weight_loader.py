@@ -31,23 +31,38 @@ import numpy as np
 def parse_hifigan_config(config_list: list, sr: int) -> dict:
     """Parse an RVC v2 config list into a HiFiGAN model config dict.
 
+    RVC v2 config is an 18-element positional list. Key indices:
+      [2]  = inter_channels (192)
+      [10] = resblock_kernel_sizes ([3, 7, 11])
+      [11] = resblock_dilation_sizes ([[1,3,5],...])
+      [12] = upsample_rates (e.g. [12, 10, 2, 2])
+      [13] = upsample_initial_channel (512)
+      [14] = upsample_kernel_sizes (e.g. [24, 20, 4, 4])
+      [17] = sample_rate (if present, else use sr param)
+
     Args:
-        config_list: 17-element positional config list from RVC v2 checkpoint.
-        sr: Sample rate (from checkpoint["sr"]).
+        config_list: 18-element positional config list from RVC v2 checkpoint.
+        sr: Sample rate (from checkpoint["sr"], used as fallback).
 
     Returns:
         Dict with named config values including computed hop_length.
     """
-    upsample_rates = config_list[13]
+    upsample_rates = config_list[12]
+    # Sample rate: prefer config[17] (int) over sr param (may be string like "48k")
+    sample_rate = sr
+    if len(config_list) > 17 and isinstance(config_list[17], int):
+        sample_rate = config_list[17]
+    elif isinstance(sr, str):
+        # Handle "48k" -> 48000 style strings
+        sample_rate = int(sr.replace("k", "000"))
     return {
-        "sr": sr,
-        "inter_channels": config_list[3],
-        "resblock": config_list[10],
-        "resblock_kernel_sizes": config_list[11],
-        "resblock_dilation_sizes": config_list[12],
+        "sr": sample_rate,
+        "inter_channels": config_list[2],
+        "resblock_kernel_sizes": config_list[10],
+        "resblock_dilation_sizes": config_list[11],
         "upsample_rates": upsample_rates,
-        "upsample_initial_channel": config_list[14],
-        "upsample_kernel_sizes": config_list[15],
+        "upsample_initial_channel": config_list[13],
+        "upsample_kernel_sizes": config_list[14],
         "hop_length": reduce(mul, upsample_rates, 1),
     }
 
@@ -181,3 +196,35 @@ def extract_hifigan_weights(state_dict: dict) -> dict[str, np.ndarray]:
                 result.pop(bias_key, None)
 
     return result
+
+
+def load_hifigan_weights(checkpoint_path: str) -> tuple[dict[str, np.ndarray], dict]:
+    """Load NSF-HiFiGAN weights from an RVC v2 .pth checkpoint.
+
+    Args:
+        checkpoint_path: Path to RVC .pth file.
+
+    Returns:
+        (weights_dict, config_dict) where weights_dict has internal flat keys
+        and config_dict has model architecture params.
+    """
+    import torch
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+    # Handle nested state dict
+    if "weight" in ckpt:
+        sd = {k: v.numpy() if hasattr(v, 'numpy') else np.asarray(v)
+              for k, v in ckpt["weight"].items()}
+    else:
+        sd = {k: v.numpy() if hasattr(v, 'numpy') else np.asarray(v)
+              for k, v in ckpt.items() if hasattr(v, 'shape')}
+
+    sr = ckpt.get("sr", 48000)
+    config_list = ckpt.get("config", [])
+    if not config_list:
+        raise ValueError("RVC checkpoint missing 'config' key")
+
+    weights = extract_hifigan_weights(sd)
+    config = parse_hifigan_config(config_list, sr)
+
+    return weights, config

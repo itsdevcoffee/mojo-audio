@@ -16,18 +16,21 @@ class TestHiFiGANWeightLoader:
     """Tests for _hifigan_weight_loader — no checkpoint download required."""
 
     def _make_config_list(self, sr: int, upsample_rates: list[int]) -> list:
-        """Build a 17-element RVC v2 config list.
+        """Build an 18-element RVC v2 config list.
 
-        Only indices 3, 10-15 matter; the rest are placeholders.
+        Key indices: [2]=inter_channels, [10]=resblock_kernel_sizes,
+        [11]=resblock_dilation_sizes, [12]=upsample_rates,
+        [13]=upsample_initial_channel, [14]=upsample_kernel_sizes,
+        [17]=sample_rate. Others are placeholders.
         """
-        cfg = [None] * 17
-        cfg[3] = 192                             # inter_channels
-        cfg[10] = "1"                            # resblock type
-        cfg[11] = [3, 7, 11]                     # resblock_kernel_sizes
-        cfg[12] = [[1, 3, 5], [1, 3, 5], [1, 3, 5]]  # resblock_dilation_sizes
-        cfg[13] = upsample_rates
-        cfg[14] = 512                            # upsample_initial_channel
-        cfg[15] = [k * 2 for k in upsample_rates]  # upsample_kernel_sizes (common convention)
+        cfg = [0] * 18
+        cfg[2] = 192                             # inter_channels
+        cfg[10] = [3, 7, 11]                     # resblock_kernel_sizes
+        cfg[11] = [[1, 3, 5], [1, 3, 5], [1, 3, 5]]  # resblock_dilation_sizes
+        cfg[12] = upsample_rates
+        cfg[13] = 512                            # upsample_initial_channel
+        cfg[14] = [k * 2 for k in upsample_rates]  # upsample_kernel_sizes
+        cfg[17] = sr                             # sample_rate
         return cfg, sr
 
     # ---- test_parse_config_48k ----
@@ -39,7 +42,6 @@ class TestHiFiGANWeightLoader:
 
         assert cfg["sr"] == 48000
         assert cfg["inter_channels"] == 192
-        assert cfg["resblock"] == "1"
         assert cfg["resblock_kernel_sizes"] == [3, 7, 11]
         assert cfg["resblock_dilation_sizes"] == [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
         assert cfg["upsample_rates"] == [12, 10, 2, 2]
