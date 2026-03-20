@@ -41,6 +41,8 @@ test-models = "pytest tests/test_audio_encoder.py -v -m 'not slow'"
 test-models-full = "pytest tests/test_audio_encoder.py -v -s"
 test-pitch-extractor = "pytest tests/test_pitch_extractor.py -v -m 'not slow'"
 test-pitch-extractor-full = "pytest tests/test_pitch_extractor.py -v -s"
+test-hifigan = "pytest tests/test_hifigan.py -v -m 'not slow'"
+test-hifigan-full = "pytest tests/test_hifigan.py -v -s"
 bench-models = "python experiments/contentvec-max/benchmark.py"
 
 # Development
