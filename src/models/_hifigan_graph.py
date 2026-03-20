@@ -7,6 +7,8 @@ All Conv1d operations use Conv2d with W=1 in NHWC format: [B, T, 1, C].
 """
 
 from __future__ import annotations
+from functools import reduce
+import operator
 import numpy as np
 from max.graph import Graph, TensorType, ops, DeviceRef, Dim
 from max.dtype import DType
@@ -229,3 +231,195 @@ def build_resblock(x, weights, dilations, device_ref):
         x = ops.add(x, residual)
 
     return x
+
+
+def _noise_conv(excitation, w_np, b_np, stride, device_ref):
+    """Strided Conv1d for downsampling excitation signal to match upsample resolution.
+
+    Converts PyTorch Conv1d weight [C_out, C_in, K] to MAX RSCF [K, 1, C_in, C_out].
+    Uses stride on the H (time) axis only.
+
+    Args:
+        excitation: NHWC input [B, Ta, 1, 1].
+        w_np: PyTorch Conv1d weight [C_out, C_in, K].
+        b_np: Optional bias [C_out] or None.
+        stride: Downsampling stride along T.
+        device_ref: MAX DeviceRef.
+
+    Returns:
+        TensorValue [B, Ta//stride, 1, C_out].
+    """
+    K = w_np.shape[2]
+    C_out = w_np.shape[0]
+    C_in = w_np.shape[1]
+
+    # MAX Engine doesn't support conv2d with K=1 and C_in=1 (RSCF layout
+    # transform bug). Work around by zero-padding the kernel to K=3.
+    if K == 1:
+        w_padded = np.zeros((C_out, C_in, 3), dtype=w_np.dtype)
+        w_padded[:, :, 1] = w_np[:, :, 0]  # center the single tap
+        w_np = w_padded
+        K = 3
+
+    # Padding to achieve exact downsampling: T_out = T_in / stride.
+    # With pad = (K - stride) // 2: output = (T_in + 2*pad - K) / stride + 1
+    #   = (T_in + K - stride - K) / stride + 1 = T_in / stride.
+    # When K == stride (common case), pad = 0.
+    pad = (K - stride) // 2
+
+    # PyTorch [C_out, C_in, K] -> MAX RSCF [K, 1, C_in, C_out]
+    w_max = np.transpose(w_np, (2, 1, 0))[:, np.newaxis, :, :]
+    w_const = ops.constant(w_max, device=device_ref)
+
+    out = ops.conv2d(
+        excitation, w_const,
+        stride=(stride, 1),
+        dilation=(1, 1),
+        padding=(pad, pad, 0, 0),
+    )
+
+    if b_np is not None:
+        b = ops.constant(b_np.reshape(1, 1, 1, -1), device=device_ref)
+        out = ops.add(out, b)
+
+    return out
+
+
+def build_hifigan_graph(weights, config, device="cpu", batch_size=1):
+    """Build the full NSF-HiFiGAN generator as a MAX Graph.
+
+    Architecture:
+        latents -> conv_pre(inter_channels -> uic, K=7, pad=3)
+        -> for each upsample block i:
+            LeakyReLU -> ConvTranspose(ch -> ch//2, stride=rates[i])
+            + noise_conv_i(excitation, stride=product(rates[i+1:]))
+            -> 3x ResBlock (one per kernel size [3, 7, 11])
+        -> LeakyReLU -> conv_post(ch -> 1, K=7, pad=3) -> tanh
+
+    Args:
+        weights: Dict of numpy arrays with HiFiGAN weight keys.
+        config: Dict with keys: inter_channels, upsample_rates,
+                upsample_initial_channel, upsample_kernel_sizes,
+                resblock_kernel_sizes, resblock_dilation_sizes.
+        device: Device string, default "cpu".
+        batch_size: Batch size, default 1.
+
+    Returns:
+        A compiled MAX Graph with two inputs (latents, excitation) and one output.
+    """
+    upsample_rates = config["upsample_rates"]
+    uic = config["upsample_initial_channel"]  # 512
+    inter_channels = config["inter_channels"]  # 192
+    resblock_kernel_sizes = config["resblock_kernel_sizes"]  # [3, 7, 11]
+    resblock_dilation_sizes = config["resblock_dilation_sizes"]
+
+    dev = DeviceRef.CPU() if device == "cpu" else DeviceRef(device)
+
+    T = Dim("T")
+    Ta = Dim("Ta")
+
+    with Graph(
+        "hifigan",
+        input_types=[
+            TensorType(DType.float32, [batch_size, T, 1, inter_channels], dev),
+            TensorType(DType.float32, [batch_size, Ta, 1, 1], dev),
+        ],
+    ) as g:
+        latents, excitation = g.inputs
+
+        # --- conv_pre: [B, T, 1, 192] -> [B, T, 1, 512] ---
+        x = conv1d(
+            latents,
+            weights["conv_pre.weight"],
+            weights.get("conv_pre.bias"),
+            dilation=1,
+            device_ref=dev,
+        )
+
+        ch = uic  # current channel count, starts at 512
+
+        for i, (rate, uk) in enumerate(
+            zip(upsample_rates, config["upsample_kernel_sizes"])
+        ):
+            ch_next = ch // 2
+
+            # LeakyReLU
+            x = leaky_relu(x, device_ref=dev)
+
+            # ConvTranspose upsample
+            x = conv_transpose_1d(
+                x,
+                weights[f"ups.{i}.weight"],
+                weights.get(f"ups.{i}.bias"),
+                stride=rate,
+                device_ref=dev,
+            )
+
+            # noise_conv: downsample excitation to current resolution
+            noise_stride = reduce(
+                operator.mul, upsample_rates[i + 1 :], 1
+            )
+            noise = _noise_conv(
+                excitation,
+                weights[f"noise_convs.{i}.weight"],
+                weights.get(f"noise_convs.{i}.bias"),
+                stride=noise_stride,
+                device_ref=dev,
+            )
+
+            # Rebind noise to match x's symbolic time dim (MAX can't prove
+            # Ta/noise_stride == T*product(rates[:i+1]) symbolically).
+            noise = ops.rebind(
+                noise,
+                x.shape,
+                message=f"noise_conv {i}: excitation time mismatch after downsample",
+            )
+
+            # Add noise to upsampled signal
+            x = ops.add(x, noise)
+
+            # 3 ResBlocks (one per kernel size)
+            for k_idx, (rk, rd) in enumerate(
+                zip(resblock_kernel_sizes, resblock_dilation_sizes)
+            ):
+                rb_idx = i * len(resblock_kernel_sizes) + k_idx
+                rb_weights = {}
+                for j in range(len(rd)):
+                    rb_weights[f"convs1.{j}.weight"] = weights[
+                        f"resblocks.{rb_idx}.convs1.{j}.weight"
+                    ]
+                    rb_weights[f"convs1.{j}.bias"] = weights.get(
+                        f"resblocks.{rb_idx}.convs1.{j}.bias"
+                    )
+                    rb_weights[f"convs2.{j}.weight"] = weights[
+                        f"resblocks.{rb_idx}.convs2.{j}.weight"
+                    ]
+                    rb_weights[f"convs2.{j}.bias"] = weights.get(
+                        f"resblocks.{rb_idx}.convs2.{j}.bias"
+                    )
+                x = build_resblock(x, rb_weights, dilations=rd, device_ref=dev)
+
+            ch = ch_next
+
+        # Final: LeakyReLU -> conv_post -> tanh
+        x = leaky_relu(x, device_ref=dev)
+        x = conv1d(
+            x,
+            weights["conv_post.weight"],
+            weights.get("conv_post.bias"),
+            dilation=1,
+            device_ref=dev,
+        )
+
+        # tanh: try ops.tanh first, fallback to sigmoid approximation
+        try:
+            x = ops.tanh(x)
+        except (AttributeError, Exception):
+            # tanh(x) = 2 * sigmoid(2x) - 1
+            two = ops.constant(np.array(2.0, dtype=np.float32), device=dev)
+            one = ops.constant(np.array(1.0, dtype=np.float32), device=dev)
+            x = ops.sub(ops.mul(two, ops.sigmoid(ops.mul(two, x))), one)
+
+        g.output(x)
+
+    return g

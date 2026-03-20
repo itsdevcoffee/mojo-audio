@@ -1,10 +1,13 @@
-"""Tests for NSF-HiFiGAN weight loader.
+"""Tests for NSF-HiFiGAN weight loader and full graph.
 
-Covers config parsing, weight-norm reconstruction, and dec.* key extraction.
+Covers config parsing, weight-norm reconstruction, dec.* key extraction,
+and full HiFiGAN graph shape/numerical tests.
 """
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from functools import reduce
+import operator
 import numpy as np
 import pytest
 
@@ -245,3 +248,159 @@ class TestResBlock:
         assert out_np.shape == (1, T_in, 1, channels), (
             f"Expected (1,{T_in},1,{channels}) got {out_np.shape}"
         )
+
+
+def _make_full_hifigan_weights(rng, config):
+    """Generate all random weights for a full HiFiGAN architecture.
+
+    Returns a dict with keys matching the weight key convention:
+        conv_pre.weight, conv_pre.bias
+        ups.{i}.weight, ups.{i}.bias
+        noise_convs.{i}.weight, noise_convs.{i}.bias
+        resblocks.{idx}.convs1.{j}.weight, .bias
+        resblocks.{idx}.convs2.{j}.weight, .bias
+        conv_post.weight, conv_post.bias
+    """
+    upsample_rates = config["upsample_rates"]
+    uic = config["upsample_initial_channel"]
+    inter_channels = config["inter_channels"]
+    resblock_kernel_sizes = config["resblock_kernel_sizes"]
+    resblock_dilation_sizes = config["resblock_dilation_sizes"]
+    upsample_kernel_sizes = config["upsample_kernel_sizes"]
+
+    scale = 0.01
+    w = {}
+
+    # conv_pre: Conv1d(inter_channels, uic, K=7)
+    # PyTorch format: [C_out, C_in, K]
+    w["conv_pre.weight"] = rng.standard_normal(
+        (uic, inter_channels, 7)
+    ).astype(np.float32) * scale
+    w["conv_pre.bias"] = np.zeros(uic, dtype=np.float32)
+
+    ch = uic
+    for i, (rate, uk) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
+        ch_next = ch // 2
+
+        # ConvTranspose1d: ups.{i}
+        # PyTorch ConvTranspose1d weight: [C_in, C_out, K]
+        w[f"ups.{i}.weight"] = rng.standard_normal(
+            (ch, ch_next, uk)
+        ).astype(np.float32) * scale
+        w[f"ups.{i}.bias"] = np.zeros(ch_next, dtype=np.float32)
+
+        # noise_conv: Conv1d(1, ch_next, K=noise_stride or 1)
+        noise_stride = reduce(operator.mul, upsample_rates[i + 1:], 1)
+        noise_k = max(noise_stride, 1)
+        # PyTorch Conv1d: [C_out, C_in, K]
+        w[f"noise_convs.{i}.weight"] = rng.standard_normal(
+            (ch_next, 1, noise_k)
+        ).astype(np.float32) * scale
+        w[f"noise_convs.{i}.bias"] = np.zeros(ch_next, dtype=np.float32)
+
+        # ResBlocks: 3 per upsample block (one per kernel size)
+        for k_idx, (rk, rd) in enumerate(
+            zip(resblock_kernel_sizes, resblock_dilation_sizes)
+        ):
+            rb_idx = i * len(resblock_kernel_sizes) + k_idx
+            for j in range(len(rd)):
+                # convs1.{j}: Conv1d(ch_next, ch_next, rk)
+                w[f"resblocks.{rb_idx}.convs1.{j}.weight"] = rng.standard_normal(
+                    (ch_next, ch_next, rk)
+                ).astype(np.float32) * scale
+                w[f"resblocks.{rb_idx}.convs1.{j}.bias"] = np.zeros(
+                    ch_next, dtype=np.float32
+                )
+                # convs2.{j}: Conv1d(ch_next, ch_next, rk)
+                w[f"resblocks.{rb_idx}.convs2.{j}.weight"] = rng.standard_normal(
+                    (ch_next, ch_next, rk)
+                ).astype(np.float32) * scale
+                w[f"resblocks.{rb_idx}.convs2.{j}.bias"] = np.zeros(
+                    ch_next, dtype=np.float32
+                )
+
+        ch = ch_next
+
+    # conv_post: Conv1d(ch, 1, K=7)
+    w["conv_post.weight"] = rng.standard_normal(
+        (1, ch, 7)
+    ).astype(np.float32) * scale
+    w["conv_post.bias"] = np.zeros(1, dtype=np.float32)
+
+    return w
+
+
+class TestHiFiGANGraph:
+    """Tests for the full HiFiGAN MAX graph."""
+
+    CONFIG_48K = {
+        "inter_channels": 192,
+        "upsample_rates": [12, 10, 2, 2],
+        "upsample_initial_channel": 512,
+        "upsample_kernel_sizes": [24, 20, 4, 4],
+        "resblock_kernel_sizes": [3, 7, 11],
+        "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+        "sample_rate": 48000,
+        "hop_length": 480,
+    }
+
+    @pytest.fixture(scope="class")
+    def cpu_device(self):
+        from max.driver import CPU
+        return CPU()
+
+    @pytest.fixture(scope="class")
+    def model_48k(self, cpu_device):
+        """Build full HiFiGAN graph with random weights, 48kHz. Compiled once."""
+        from max import engine
+        from models._hifigan_graph import build_hifigan_graph
+
+        rng = np.random.default_rng(42)
+        weights = _make_full_hifigan_weights(rng, self.CONFIG_48K)
+        graph = build_hifigan_graph(weights, self.CONFIG_48K, device="cpu", batch_size=1)
+        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
+        return model
+
+    @staticmethod
+    def _result_to_numpy(result):
+        v = list(result.values())[0] if isinstance(result, dict) else result[0]
+        return v.to_numpy() if hasattr(v, "to_numpy") else np.array(v)
+
+    def test_output_shape_48k(self, model_48k):
+        """latents [1, 10, 1, 192] + excitation [1, 4800, 1, 1] -> output T=4800."""
+        rng = np.random.default_rng(99)
+        T_latent = 10
+        T_excitation = T_latent * self.CONFIG_48K["hop_length"]  # 4800
+
+        latents = rng.standard_normal(
+            (1, T_latent, 1, self.CONFIG_48K["inter_channels"])
+        ).astype(np.float32) * 0.1
+        excitation = rng.standard_normal(
+            (1, T_excitation, 1, 1)
+        ).astype(np.float32) * 0.1
+
+        result = model_48k.execute(latents, excitation)
+        out_np = self._result_to_numpy(result)
+
+        assert out_np.shape == (1, T_excitation, 1, 1), (
+            f"Expected (1, {T_excitation}, 1, 1) got {out_np.shape}"
+        )
+
+    def test_output_not_nan(self, model_48k):
+        """Random input with small magnitudes produces no NaN/Inf."""
+        rng = np.random.default_rng(123)
+        T_latent = 10
+        T_excitation = T_latent * self.CONFIG_48K["hop_length"]
+
+        latents = rng.standard_normal(
+            (1, T_latent, 1, self.CONFIG_48K["inter_channels"])
+        ).astype(np.float32) * 0.1
+        excitation = rng.standard_normal(
+            (1, T_excitation, 1, 1)
+        ).astype(np.float32) * 0.1
+
+        result = model_48k.execute(latents, excitation)
+        out_np = self._result_to_numpy(result)
+
+        assert not np.any(np.isnan(out_np)), "Output contains NaN values"
+        assert not np.any(np.isinf(out_np)), "Output contains Inf values"
