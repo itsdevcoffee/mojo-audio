@@ -28,7 +28,7 @@ def audio_1s(rng):
     return rng.standard_normal((1, 16000)).astype(np.float32)
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def cpu_device():
     from max.driver import CPU
     return CPU()
@@ -165,73 +165,66 @@ class TestWeightLoader:
 
 
 class TestFeatureExtractor:
-    """Tests for CNN feature extractor — no model download required."""
+    """Tests for CNN feature extractor — no model download required.
 
-    def _make_random_weights(self):
+    Uses a class-scoped fixture to compile the MAX graph ONCE for all tests.
+    """
+
+    @staticmethod
+    def _make_random_weights():
         """Random weights in PyTorch format [C_out, C_in, K]."""
         import numpy as np
+        rng = np.random.default_rng(42)
         configs = [
             (1, 512, 10), (512, 512, 3), (512, 512, 3), (512, 512, 3),
             (512, 512, 3), (512, 512, 2), (512, 512, 2),
         ]
         w = {}
         for i, (c_in, c_out, k) in enumerate(configs):
-            w[f"cnn.{i}.weight"] = np.random.randn(c_out, c_in, k).astype(np.float32)
+            w[f"cnn.{i}.weight"] = rng.standard_normal((c_out, c_in, k)).astype(np.float32)
             w[f"cnn.{i}.norm.weight"] = np.ones(c_out, dtype=np.float32)
             w[f"cnn.{i}.norm.bias"] = np.zeros(c_out, dtype=np.float32)
         return w
 
-    def _result_to_numpy(self, result):
+    @staticmethod
+    def _result_to_numpy(result):
         """Extract numpy array from model.execute() result (list or dict of MAX Tensors)."""
         import numpy as np
         v = list(result.values())[0] if isinstance(result, dict) else result[0]
         return v.to_numpy() if hasattr(v, "to_numpy") else np.array(v)
 
-    def test_output_shape_1s(self, cpu_device):
-        """1s @16kHz -> [1, 49, 512]."""
-        import numpy as np
+    @pytest.fixture(scope="class")
+    def fe_model(self, cpu_device):
+        """Compile feature extractor graph once for all tests in this class."""
         from max import engine
         from max.graph import DeviceRef
         from models._feature_extractor import build_feature_extractor_graph
 
         cpu_ref = DeviceRef.CPU()
         graph = build_feature_extractor_graph(self._make_random_weights(), cpu_ref)
-        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
+        return engine.InferenceSession(devices=[cpu_device]).load(graph)
 
+    def test_output_shape_1s(self, fe_model):
+        """1s @16kHz -> [1, 49, 512]."""
+        import numpy as np
         audio = np.zeros((1, 16000, 1, 1), dtype=np.float32)
-        result = model.execute(audio)
+        result = fe_model.execute(audio)
         out = self._result_to_numpy(result)
         assert out.shape == (1, 49, 512), f"Expected (1,49,512) got {out.shape}"
 
-    def test_output_shape_2s(self, cpu_device):
+    def test_output_shape_2s(self, fe_model):
         """2s @16kHz -> [1, 99, 512]."""
         import numpy as np
-        from max import engine
-        from max.graph import DeviceRef
-        from models._feature_extractor import build_feature_extractor_graph
-
-        cpu_ref = DeviceRef.CPU()
-        graph = build_feature_extractor_graph(self._make_random_weights(), cpu_ref)
-        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
-
         audio = np.zeros((1, 32000, 1, 1), dtype=np.float32)
-        result = model.execute(audio)
+        result = fe_model.execute(audio)
         out = self._result_to_numpy(result)
         assert out.shape == (1, 99, 512), f"Expected (1,99,512) got {out.shape}"
 
-    def test_output_not_nan(self, cpu_device, audio_1s):
+    def test_output_not_nan(self, fe_model, audio_1s):
         """Output must not contain NaN or Inf."""
         import numpy as np
-        from max import engine
-        from max.graph import DeviceRef
-        from models._feature_extractor import build_feature_extractor_graph
-
-        cpu_ref = DeviceRef.CPU()
-        graph = build_feature_extractor_graph(self._make_random_weights(), cpu_ref)
-        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
-
         audio_in = audio_1s.reshape(1, 16000, 1, 1)
-        result = model.execute(audio_in)
+        result = fe_model.execute(audio_in)
         out = self._result_to_numpy(result)
         assert not np.isnan(out).any(), "Output contains NaN"
         assert not np.isinf(out).any(), "Output contains Inf"
@@ -247,118 +240,105 @@ class TestFeatureExtractor:
 
 
 class TestAttention:
-    """Tests for multi-head self-attention — no download required."""
+    """Tests for multi-head self-attention — no download required.
 
-    def _make_random_weights(self, hidden=768):
+    Uses a class-scoped fixture to compile the attention graph ONCE.
+    """
+
+    @staticmethod
+    def _make_random_weights(hidden=768):
         """Random attention weights in PyTorch format [out, in]."""
         import numpy as np
+        rng = np.random.default_rng(42)
         return {
-            "q.weight": np.random.randn(hidden, hidden).astype(np.float32),
+            "q.weight": rng.standard_normal((hidden, hidden)).astype(np.float32),
             "q.bias": np.zeros(hidden, dtype=np.float32),
-            "k.weight": np.random.randn(hidden, hidden).astype(np.float32),
+            "k.weight": rng.standard_normal((hidden, hidden)).astype(np.float32),
             "k.bias": np.zeros(hidden, dtype=np.float32),
-            "v.weight": np.random.randn(hidden, hidden).astype(np.float32),
+            "v.weight": rng.standard_normal((hidden, hidden)).astype(np.float32),
             "v.bias": np.zeros(hidden, dtype=np.float32),
-            "out.weight": np.random.randn(hidden, hidden).astype(np.float32),
+            "out.weight": rng.standard_normal((hidden, hidden)).astype(np.float32),
             "out.bias": np.zeros(hidden, dtype=np.float32),
         }
 
-    def test_output_shape_seq49(self, cpu_device):
-        """[1, 49, 768] in -> [1, 49, 768] out."""
-        import numpy as np
+    @pytest.fixture(scope="class")
+    def attn_model(self, cpu_device):
+        """Compile attention graph once for all tests in this class."""
         from max import engine
         from max.graph import DeviceRef
         from models._attention import build_attention_graph
 
         cpu_ref = DeviceRef.CPU()
         graph = build_attention_graph(self._make_random_weights(), cpu_ref)
-        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
+        return engine.InferenceSession(devices=[cpu_device]).load(graph)
 
+    def test_output_shape_seq49(self, attn_model):
+        """[1, 49, 768] in -> [1, 49, 768] out."""
+        import numpy as np
         x = np.random.randn(1, 49, 768).astype(np.float32)
-        result = model.execute(x)
+        result = attn_model.execute(x)
         tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
         out = tensor.to_numpy()
         assert out.shape == (1, 49, 768), f"Expected (1,49,768) got {out.shape}"
 
-    def test_output_shape_seq99(self, cpu_device):
+    def test_output_shape_seq99(self, attn_model):
         """Dynamic sequence length: [1, 99, 768] in -> [1, 99, 768] out."""
         import numpy as np
-        from max import engine
-        from max.graph import DeviceRef
-        from models._attention import build_attention_graph
-
-        cpu_ref = DeviceRef.CPU()
-        graph = build_attention_graph(self._make_random_weights(), cpu_ref)
-        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
-
         x = np.random.randn(1, 99, 768).astype(np.float32)
-        result = model.execute(x)
+        result = attn_model.execute(x)
         tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
         out = tensor.to_numpy()
         assert out.shape == (1, 99, 768), f"Expected (1,99,768) got {out.shape}"
 
-    def test_output_not_nan(self, cpu_device):
+    def test_output_not_nan(self, attn_model):
         """Attention output must not contain NaN or Inf."""
         import numpy as np
-        from max import engine
-        from max.graph import DeviceRef
-        from models._attention import build_attention_graph
-
-        cpu_ref = DeviceRef.CPU()
-        graph = build_attention_graph(self._make_random_weights(), cpu_ref)
-        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
-
         x = np.random.randn(1, 49, 768).astype(np.float32)
-        result = model.execute(x)
+        result = attn_model.execute(x)
         tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
         out = tensor.to_numpy()
         assert not np.isnan(out).any(), "Output contains NaN"
         assert not np.isinf(out).any(), "Output contains Inf"
 
-    def test_attention_is_not_identity(self, cpu_device):
+    def test_attention_is_not_identity(self, attn_model):
         """Attention output must differ from input (non-trivial transformation)."""
         import numpy as np
-        from max import engine
-        from max.graph import DeviceRef
-        from models._attention import build_attention_graph
-
-        cpu_ref = DeviceRef.CPU()
-        graph = build_attention_graph(self._make_random_weights(), cpu_ref)
-        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
-
         x = np.random.randn(1, 49, 768).astype(np.float32)
-        result = model.execute(x)
+        result = attn_model.execute(x)
         tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
         out = tensor.to_numpy()
-        # Non-trivial: output must differ from input by more than floating point noise
         diff = np.abs(out - x).mean()
         assert diff > 0.01, f"Attention output too close to identity (mean diff={diff:.6f})"
 
 
 class TestTransformerBlock:
-    """Test a single transformer block."""
+    """Test a single transformer block.
 
-    def _make_random_block_weights(self, hidden=768, ffn_dim=3072):
+    Uses class-scoped fixtures: one for random weights (shared by shape + NaN tests)
+    and one for zero weights (residual test). 2 compilations instead of 3.
+    """
+
+    @staticmethod
+    def _make_random_block_weights(hidden=768, ffn_dim=3072):
         """Random weights for one block."""
         import numpy as np
+        rng = np.random.default_rng(42)
         w = {}
-        # LayerNorms
         for name in ["norm1", "norm2"]:
             w[f"{name}.weight"] = np.ones(hidden, dtype=np.float32)
             w[f"{name}.bias"] = np.zeros(hidden, dtype=np.float32)
-        # Attention projections: [out, in] PyTorch format
         for proj in ["attn.q", "attn.k", "attn.v", "attn.out"]:
-            w[f"{proj}.weight"] = np.random.randn(hidden, hidden).astype(np.float32) * 0.02
+            w[f"{proj}.weight"] = rng.standard_normal((hidden, hidden)).astype(np.float32) * 0.02
             w[f"{proj}.bias"] = np.zeros(hidden, dtype=np.float32)
-        # FFN
-        w["ffn.fc1.weight"] = np.random.randn(ffn_dim, hidden).astype(np.float32) * 0.02
+        w["ffn.fc1.weight"] = rng.standard_normal((ffn_dim, hidden)).astype(np.float32) * 0.02
         w["ffn.fc1.bias"] = np.zeros(ffn_dim, dtype=np.float32)
-        w["ffn.fc2.weight"] = np.random.randn(hidden, ffn_dim).astype(np.float32) * 0.02
+        w["ffn.fc2.weight"] = rng.standard_normal((hidden, ffn_dim)).astype(np.float32) * 0.02
         w["ffn.fc2.bias"] = np.zeros(hidden, dtype=np.float32)
         return w
 
-    def test_output_shape_preserved(self, cpu_device):
-        """Block output shape matches input [1, 49, 768]."""
+    @pytest.fixture(scope="class")
+    def block_model(self, cpu_device):
+        """Compile transformer block graph (random weights) once."""
         import numpy as np
         from max import engine
         from max.graph import Graph, TensorType, DeviceRef, Dim
@@ -367,7 +347,6 @@ class TestTransformerBlock:
 
         cpu_ref = DeviceRef.CPU()
         block_w = self._make_random_block_weights()
-
         with Graph(
             "block_test",
             input_types=[TensorType(DType.float32, [1, Dim("T"), 768], cpu_ref)],
@@ -375,16 +354,11 @@ class TestTransformerBlock:
             x = g.inputs[0]
             out = _transformer_block_ops(x, block_w, cpu_ref)
             g.output(out)
+        return engine.InferenceSession(devices=[cpu_device]).load(g)
 
-        model = engine.InferenceSession(devices=[cpu_device]).load(g)
-        inp = np.random.randn(1, 49, 768).astype(np.float32)
-        result = model.execute(inp)
-        tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
-        out_arr = tensor.to_numpy()
-        assert out_arr.shape == (1, 49, 768), f"Expected (1,49,768) got {out_arr.shape}"
-
-    def test_residual_applied(self, cpu_device):
-        """With zero projection weights, block output is layer-normed input (post-norm arch)."""
+    @pytest.fixture(scope="class")
+    def block_model_zero(self, cpu_device):
+        """Compile transformer block graph (zero projection weights) once."""
         import numpy as np
         from max import engine
         from max.graph import Graph, TensorType, DeviceRef, Dim
@@ -392,15 +366,10 @@ class TestTransformerBlock:
         from models.audio_encoder import _transformer_block_ops
 
         cpu_ref = DeviceRef.CPU()
-        # Zero out all projection weights — attention and FFN produce zeros.
-        # HuBERT uses post-norm: x -> attn(x) -> x+attn_out -> norm1 -> ffn -> x+ffn_out -> norm2.
-        # With zero projection weights: attn_out=0, ffn_out=0.
-        # So output = norm2(norm1(x + 0) + 0) = norm2(norm1(x)).
         block_w = self._make_random_block_weights()
         for k in block_w:
             if "weight" in k and "norm" not in k:
                 block_w[k] = np.zeros_like(block_w[k])
-
         with Graph(
             "block_zero",
             input_types=[TensorType(DType.float32, [1, Dim("T"), 768], cpu_ref)],
@@ -408,40 +377,36 @@ class TestTransformerBlock:
             x = g.inputs[0]
             out = _transformer_block_ops(x, block_w, cpu_ref)
             g.output(out)
+        return engine.InferenceSession(devices=[cpu_device]).load(g)
 
-        model = engine.InferenceSession(devices=[cpu_device]).load(g)
+    def test_output_shape_preserved(self, block_model):
+        """Block output shape matches input [1, 49, 768]."""
+        import numpy as np
         inp = np.random.randn(1, 49, 768).astype(np.float32)
-        result = model.execute(inp)
+        result = block_model.execute(inp)
         tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
         out_arr = tensor.to_numpy()
-        # With zero weights: output is double-normalized input (norm2(norm1(x))).
-        # The output should NOT be identical to input (unless input is already normalized),
-        # but it should be finite and valid.
+        assert out_arr.shape == (1, 49, 768), f"Expected (1,49,768) got {out_arr.shape}"
+
+    def test_residual_applied(self, block_model_zero):
+        """With zero projection weights, block output is layer-normed input (post-norm arch)."""
+        import numpy as np
+        # HuBERT uses post-norm: x -> attn(x) -> x+attn_out -> norm1 -> ffn -> x+ffn_out -> norm2.
+        # With zero projection weights: attn_out=0, ffn_out=0.
+        # So output = norm2(norm1(x + 0) + 0) = norm2(norm1(x)).
+        inp = np.random.randn(1, 49, 768).astype(np.float32)
+        result = block_model_zero.execute(inp)
+        tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
+        out_arr = tensor.to_numpy()
         assert not np.isnan(out_arr).any(), "Output contains NaN"
         assert not np.isinf(out_arr).any(), "Output contains Inf"
-        # After layer norm, values should be roughly zero-mean, unit-variance
         assert out_arr.std() > 0.5, f"Output std too small: {out_arr.std()}"
 
-    def test_output_not_nan(self, cpu_device):
+    def test_output_not_nan(self, block_model):
         """Block output must not contain NaN or Inf."""
         import numpy as np
-        from max import engine
-        from max.graph import Graph, TensorType, DeviceRef, Dim
-        from max.dtype import DType
-        from models.audio_encoder import _transformer_block_ops
-
-        cpu_ref = DeviceRef.CPU()
-        with Graph(
-            "block_nan_check",
-            input_types=[TensorType(DType.float32, [1, Dim("T"), 768], cpu_ref)],
-        ) as g:
-            x = g.inputs[0]
-            out = _transformer_block_ops(x, self._make_random_block_weights(), cpu_ref)
-            g.output(out)
-
-        model = engine.InferenceSession(devices=[cpu_device]).load(g)
         inp = np.random.randn(1, 49, 768).astype(np.float32)
-        result = model.execute(inp)
+        result = block_model.execute(inp)
         tensor = list(result.values())[0] if isinstance(result, dict) else result[0]
         out_arr = tensor.to_numpy()
         assert not np.isnan(out_arr).any()
@@ -449,11 +414,18 @@ class TestTransformerBlock:
 
 
 class TestAudioEncoderShapes:
-    """Test full AudioEncoder with random weights — no download required."""
+    """Test full AudioEncoder with random weights — no download required.
 
-    def _make_full_weights(self):
+    Uses class-scoped fixtures to compile MAX graphs only ONCE per batch_size
+    configuration (batch=1 and batch=2), avoiding repeated JIT compilation
+    that exhausts memory and crashes the test runner.
+    """
+
+    @staticmethod
+    def _make_full_weights():
         """Generate a complete random weight dict matching HuBERT architecture."""
         import numpy as np
+        rng = np.random.default_rng(42)  # Fixed seed for reproducibility
         w = {}
         # CNN weights: PyTorch [C_out, C_in, K]
         configs = [
@@ -461,17 +433,16 @@ class TestAudioEncoderShapes:
             (512,512,3),(512,512,2),(512,512,2)
         ]
         for i, (c_in, c_out, k) in enumerate(configs):
-            w[f"cnn.{i}.weight"] = np.random.randn(c_out, c_in, k).astype(np.float32) * 0.02
+            w[f"cnn.{i}.weight"] = rng.standard_normal((c_out, c_in, k)).astype(np.float32) * 0.02
             w[f"cnn.{i}.norm.weight"] = np.ones(c_out, dtype=np.float32)
             w[f"cnn.{i}.norm.bias"] = np.zeros(c_out, dtype=np.float32)
         # Feature projection: [out, in] PyTorch
-        # LayerNorm is applied to the 512-dim CNN output BEFORE projection (matches HuBERT)
-        w["proj.weight"] = np.random.randn(768, 512).astype(np.float32) * 0.02
+        w["proj.weight"] = rng.standard_normal((768, 512)).astype(np.float32) * 0.02
         w["proj.bias"] = np.zeros(768, dtype=np.float32)
         w["proj.norm.weight"] = np.ones(512, dtype=np.float32)
         w["proj.norm.bias"] = np.zeros(512, dtype=np.float32)
         # Position conv: [C_out=768, C_in/groups=48, K=128]
-        w["pos_conv.weight"] = np.random.randn(768, 48, 128).astype(np.float32) * 0.02
+        w["pos_conv.weight"] = rng.standard_normal((768, 48, 128)).astype(np.float32) * 0.02
         w["pos_conv.bias"] = np.zeros(768, dtype=np.float32)
         # Encoder layer norm (after pos_conv, before transformer blocks)
         w["enc_norm.weight"] = np.ones(768, dtype=np.float32)
@@ -482,44 +453,88 @@ class TestAudioEncoderShapes:
                 w[f"blocks.{i}.{name}.weight"] = np.ones(768, dtype=np.float32)
                 w[f"blocks.{i}.{name}.bias"] = np.zeros(768, dtype=np.float32)
             for proj in ["attn.q", "attn.k", "attn.v", "attn.out"]:
-                w[f"blocks.{i}.{proj}.weight"] = np.random.randn(768, 768).astype(np.float32) * 0.02
+                w[f"blocks.{i}.{proj}.weight"] = rng.standard_normal((768, 768)).astype(np.float32) * 0.02
                 w[f"blocks.{i}.{proj}.bias"] = np.zeros(768, dtype=np.float32)
-            w[f"blocks.{i}.ffn.fc1.weight"] = np.random.randn(3072, 768).astype(np.float32) * 0.02
+            w[f"blocks.{i}.ffn.fc1.weight"] = rng.standard_normal((3072, 768)).astype(np.float32) * 0.02
             w[f"blocks.{i}.ffn.fc1.bias"] = np.zeros(3072, dtype=np.float32)
-            w[f"blocks.{i}.ffn.fc2.weight"] = np.random.randn(768, 3072).astype(np.float32) * 0.02
+            w[f"blocks.{i}.ffn.fc2.weight"] = rng.standard_normal((768, 3072)).astype(np.float32) * 0.02
             w[f"blocks.{i}.ffn.fc2.bias"] = np.zeros(768, dtype=np.float32)
         return w
 
-    def test_encode_1s_shape(self):
+    # --- Class-scoped fixtures: compile each graph config ONCE ---
+
+    @pytest.fixture(scope="class")
+    def full_weights(self):
+        return self._make_full_weights()
+
+    @pytest.fixture(scope="class")
+    def model_b1(self, full_weights):
+        """Batch=1 model, compiled once for all batch=1 tests."""
+        from models.audio_encoder import AudioEncoder
+        return AudioEncoder._from_weights(full_weights, device="cpu")
+
+    @pytest.fixture(scope="class")
+    def model_b2(self, full_weights):
+        """Batch=2 model, compiled once for all batch=2 tests."""
+        from models.audio_encoder import AudioEncoder
+        return AudioEncoder._from_weights(full_weights, device="cpu", batch_size=2)
+
+    # --- Batch=1 tests ---
+
+    def test_encode_1s_shape(self, model_b1):
         """1s audio -> [1, 49, 768] on CPU."""
         import numpy as np
-        from models.audio_encoder import AudioEncoder
-
-        model = AudioEncoder._from_weights(self._make_full_weights(), device="cpu")
         audio = np.zeros((1, 16000), dtype=np.float32)
-        out = model.encode(audio)
+        out = model_b1.encode(audio)
         assert out.shape == (1, 49, 768), f"Expected (1,49,768) got {out.shape}"
 
-    def test_encode_2s_shape(self):
+    def test_encode_2s_shape(self, model_b1):
         """2s audio -> [1, 99, 768] on CPU."""
         import numpy as np
-        from models.audio_encoder import AudioEncoder
-
-        model = AudioEncoder._from_weights(self._make_full_weights(), device="cpu")
         audio = np.zeros((1, 32000), dtype=np.float32)
-        out = model.encode(audio)
+        out = model_b1.encode(audio)
         assert out.shape == (1, 99, 768), f"Expected (1,99,768) got {out.shape}"
 
-    def test_encode_output_not_nan(self):
+    def test_encode_output_not_nan(self, model_b1):
         """Full encoder output must not contain NaN."""
         import numpy as np
-        from models.audio_encoder import AudioEncoder
-
-        model = AudioEncoder._from_weights(self._make_full_weights(), device="cpu")
         audio = np.random.randn(1, 16000).astype(np.float32) * 0.1
-        out = model.encode(audio)
+        out = model_b1.encode(audio)
         assert not np.isnan(out).any()
         assert not np.isinf(out).any()
+
+    def test_encode_batch1_unchanged(self, model_b1):
+        """Default batch_size=1 still gives [1, 49, 768] (backward compat)."""
+        import numpy as np
+        audio = np.zeros((1, 16000), dtype=np.float32)
+        out = model_b1.encode(audio)
+        assert out.shape == (1, 49, 768), f"Expected (1,49,768) got {out.shape}"
+
+    # --- Batch=2 tests ---
+
+    def test_encode_batch2_shape(self, model_b2):
+        """Batch=2: two 1s samples -> [2, 49, 768] on CPU."""
+        import numpy as np
+        audio = np.zeros((2, 16000), dtype=np.float32)
+        out = model_b2.encode(audio)
+        assert out.shape == (2, 49, 768), f"Expected (2,49,768) got {out.shape}"
+
+    def test_encode_batch2_not_nan(self, model_b2):
+        """Batch=2 output must not contain NaN or Inf."""
+        import numpy as np
+        audio = np.random.randn(2, 16000).astype(np.float32) * 0.1
+        out = model_b2.encode(audio)
+        assert not np.isnan(out).any(), "Batch output contains NaN"
+        assert not np.isinf(out).any(), "Batch output contains Inf"
+
+    def test_encode_batch2_samples_differ(self, model_b2):
+        """Different inputs in a batch must produce different outputs."""
+        import numpy as np
+        rng = np.random.default_rng(123)
+        audio = rng.standard_normal((2, 16000)).astype(np.float32)
+        out = model_b2.encode(audio)
+        diff = np.abs(out[0] - out[1]).mean()
+        assert diff > 0.001, f"Batch samples too similar (mean diff={diff:.6f})"
 
 
 @pytest.mark.slow

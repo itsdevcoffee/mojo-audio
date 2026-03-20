@@ -5,7 +5,7 @@ import numpy as np
 from pathlib import Path
 
 
-def _transformer_block_ops(x, block_weights: dict, device_ref, heads: int = 12, hidden: int = 768):
+def _transformer_block_ops(x, block_weights: dict, device_ref, heads: int = 12, hidden: int = 768, batch_size: int = 1):
     """Apply one HuBERT transformer block to a MAX graph tensor.
 
     Pre-norm architecture: LayerNorm -> Attention -> residual -> LayerNorm -> FFN -> residual.
@@ -14,7 +14,7 @@ def _transformer_block_ops(x, block_weights: dict, device_ref, heads: int = 12, 
     Called 12x inside build_audio_encoder_graph to construct the transformer stack.
 
     Args:
-        x: MAX graph TensorValue, shape [1, T, hidden].
+        x: MAX graph TensorValue, shape [B, T, hidden].
         block_weights: Dict with keys: norm1.*, attn.q/k/v/out.*, norm2.*, ffn.fc1/fc2.*.
                        All weight arrays in PyTorch [out, in] format.
         device_ref: DeviceRef for constant placement.
@@ -22,7 +22,7 @@ def _transformer_block_ops(x, block_weights: dict, device_ref, heads: int = 12, 
         hidden: Hidden dimension (768).
 
     Returns:
-        MAX graph TensorValue, shape [1, T, hidden].
+        MAX graph TensorValue, shape [B, T, hidden].
     """
     from max.graph import ops, Dim
 
@@ -58,22 +58,22 @@ def _transformer_block_ops(x, block_weights: dict, device_ref, heads: int = 12, 
     k = _linear(x, "attn.k.weight", "attn.k.bias")
     v = _linear(x, "attn.v.weight", "attn.v.bias")
 
-    # Reshape to [1, T, heads, head_dim] then transpose to [1, heads, T, head_dim]
-    q = _perm4(ops.reshape(q, [1, -1, heads, head_dim]), [0, 2, 1, 3])
-    k = _perm4(ops.reshape(k, [1, -1, heads, head_dim]), [0, 2, 1, 3])
-    v = _perm4(ops.reshape(v, [1, -1, heads, head_dim]), [0, 2, 1, 3])
+    # Reshape to [B, T, heads, head_dim] then transpose to [B, heads, T, head_dim]
+    q = _perm4(ops.reshape(q, [batch_size, -1, heads, head_dim]), [0, 2, 1, 3])
+    k = _perm4(ops.reshape(k, [batch_size, -1, heads, head_dim]), [0, 2, 1, 3])
+    v = _perm4(ops.reshape(v, [batch_size, -1, heads, head_dim]), [0, 2, 1, 3])
 
     # Scaled dot-product attention
     scores = ops.mul(
-        ops.matmul(q, ops.transpose(k, 2, 3)),  # [1, heads, T, T]
+        ops.matmul(q, ops.transpose(k, 2, 3)),  # [B, heads, T, T]
         _const(np.array(scale, dtype=np.float32)),
     )
     attn_weights = ops.softmax(scores, axis=-1)
-    context = ops.matmul(attn_weights, v)  # [1, heads, T, head_dim]
+    context = ops.matmul(attn_weights, v)  # [B, heads, T, head_dim]
 
-    # Merge heads: [1, heads, T, head_dim] -> [1, T, hidden]
-    context = _perm4(context, [0, 2, 1, 3])  # [1, T, heads, head_dim]
-    context = ops.reshape(context, [1, -1, hidden])
+    # Merge heads: [B, heads, T, head_dim] -> [B, T, hidden]
+    context = _perm4(context, [0, 2, 1, 3])  # [B, T, heads, head_dim]
+    context = ops.reshape(context, [batch_size, -1, hidden])
 
     # Output projection + residual
     attn_out = _linear(context, "attn.out.weight", "attn.out.bias")
@@ -112,16 +112,17 @@ class AudioEncoder:
         features = model.encode(audio_np)  # [1, seq] -> [1, frames, 768]
     """
 
-    def __init__(self, _model, _device, _model2=None, _pos_conv_weights=None, _enc_norm_weights=None):
+    def __init__(self, _model, _device, _model2=None, _pos_conv_weights=None, _enc_norm_weights=None, _batch_size=1):
         self._model = _model   # CNN + feature projection graph
         self._device = _device
         self._model2 = _model2  # Encoder norm + transformer blocks graph
         # Pos conv weights stored for numpy-based computation (avoids MAX dynamic dim bug)
         self._pos_conv_weights = _pos_conv_weights  # dict: weight, bias
         self._enc_norm_weights = _enc_norm_weights  # dict: weight, bias (if separate from model2)
+        self._batch_size = _batch_size
 
     @classmethod
-    def _from_weights(cls, weights: dict, device: str = "auto") -> "AudioEncoder":
+    def _from_weights(cls, weights: dict, device: str = "auto", batch_size: int = 1) -> "AudioEncoder":
         """Build MAX Graph from loaded weight dict.
 
         Args:
@@ -161,7 +162,7 @@ class AudioEncoder:
         # ---------------------------------------------------------------
         with Graph(
             "cnn_proj",
-            input_types=[TensorType(DType.float32, [1, Dim("L"), 1, 1], device_ref)],
+            input_types=[TensorType(DType.float32, [batch_size, Dim("L"), 1, 1], device_ref)],
         ) as g1:
             x = g1.inputs[0]  # [1, L, 1, 1]
 
@@ -174,33 +175,42 @@ class AudioEncoder:
             for i, (c_in, c_out, kernel, stride) in enumerate(cnn_configs):
                 w_max = _pt_weight_to_max(weights[f"cnn.{i}.weight"])
                 conv_out = ops.conv2d(x, _const(w_max), stride=(stride, 1))
-                # conv_out: [1, T', 1, c_out] -> reshape to [1, T', c_out]
-                conv_out = ops.reshape(conv_out, [1, -1, c_out])
+                # conv_out: [B, T', 1, c_out] -> reshape to [B, T', c_out]
+                conv_out = ops.reshape(conv_out, [batch_size, -1, c_out])
                 norm_w_key = f"cnn.{i}.norm.weight"
                 if norm_w_key in weights:
                     # GroupNorm(num_groups=C, num_channels=C): normalize each channel c
-                    # independently over the T' temporal dimension.
-                    # Reshape [1, T', C] -> [C, T'] so we can reduce over T' (last dim).
+                    # independently over the T' temporal dimension, per sample.
+                    # [B, T', C] → transpose(1,2) → [B, C, T'] → reshape [B*C, T']
                     gn_in = ops.reshape(
-                        ops.transpose(conv_out, 0, 2),  # [C, T', 1] -- transpose(0,2) on [1,T',C] gives [C,T',1]
-                        [c_out, -1],                    # [C, T']
+                        ops.transpose(conv_out, 1, 2),  # [B, C, T']
+                        [batch_size * c_out, -1],        # [B*C, T']
                     )
-                    mean_ = ops.mean(gn_in, axis=1)                           # [C, 1]
-                    diff_ = ops.sub(gn_in, mean_)                             # [C, T']
-                    var_ = ops.mean(ops.mul(diff_, diff_), axis=1)            # [C, 1]
-                    std_ = ops.sqrt(ops.add(var_, EPS_GN))                    # [C, 1]
-                    normed_ = ops.div(diff_, std_)                            # [C, T']
-                    gamma_ = ops.reshape(_const(weights[norm_w_key]), [c_out, 1])
-                    beta_ = ops.reshape(_const(weights[f"cnn.{i}.norm.bias"]), [c_out, 1])
-                    gn_out = ops.add(ops.mul(normed_, gamma_), beta_)         # [C, T']
-                    # Reshape back to [1, T', C]
-                    conv_out = ops.reshape(
-                        ops.transpose(gn_out, 0, 1),  # [T', C]
-                        [1, -1, c_out],               # [1, T', C]
+                    mean_ = ops.mean(gn_in, axis=1)                           # [B*C, 1]
+                    diff_ = ops.sub(gn_in, mean_)                             # [B*C, T']
+                    var_ = ops.mean(ops.mul(diff_, diff_), axis=1)            # [B*C, 1]
+                    std_ = ops.sqrt(ops.add(var_, EPS_GN))                    # [B*C, 1]
+                    normed_ = ops.div(diff_, std_)                            # [B*C, T']
+                    # gamma/beta: [C] → tile to [B*C, 1] by repeating B times
+                    gamma_1d = _const(weights[norm_w_key])                    # [C]
+                    beta_1d = _const(weights[f"cnn.{i}.norm.bias"])           # [C]
+                    gamma_tiled = ops.reshape(
+                        ops.tile(ops.reshape(gamma_1d, [1, c_out]), [batch_size, 1]),
+                        [batch_size * c_out, 1],                              # [B*C, 1]
                     )
-                x = ops.reshape(ops.gelu(conv_out), [1, -1, 1, c_out])
+                    beta_tiled = ops.reshape(
+                        ops.tile(ops.reshape(beta_1d, [1, c_out]), [batch_size, 1]),
+                        [batch_size * c_out, 1],
+                    )
+                    gn_out = ops.add(ops.mul(normed_, gamma_tiled), beta_tiled)  # [B*C, T']
+                    # Reshape back: [B*C, T'] → [B, C, T'] → transpose(1,2) → [B, T', C]
+                    conv_out = ops.transpose(
+                        ops.reshape(gn_out, [batch_size, c_out, -1]),        # [B, C, T']
+                        1, 2,                                                 # [B, T', C]
+                    )
+                x = ops.reshape(ops.gelu(conv_out), [batch_size, -1, 1, c_out])
 
-            x = ops.reshape(x, [1, -1, 512])  # [1, T, 512]
+            x = ops.reshape(x, [batch_size, -1, 512])  # [B, T, 512]
 
             # Stage 2: Feature Projection LayerNorm(512) -> Linear(512->768)
             # HuBERT applies layer norm to the 512-dim CNN output BEFORE projecting to 768.
@@ -227,7 +237,7 @@ class AudioEncoder:
         # ---------------------------------------------------------------
         with Graph(
             "encoder_transformer",
-            input_types=[TensorType(DType.float32, [1, Dim("T"), 768], device_ref)],
+            input_types=[TensorType(DType.float32, [batch_size, Dim("T"), 768], device_ref)],
         ) as g2:
             x = g2.inputs[0]  # [1, T, 768] after pos_conv + enc_norm
 
@@ -238,7 +248,7 @@ class AudioEncoder:
                     for k in weights
                     if k.startswith(f"blocks.{i}.")
                 }
-                x = _transformer_block_ops(x, block_w, device_ref)
+                x = _transformer_block_ops(x, block_w, device_ref, batch_size=batch_size)
 
             g2.output(x)
 
@@ -256,7 +266,8 @@ class AudioEncoder:
             "bias": weights["enc_norm.bias"].copy() if "enc_norm.bias" in weights else None,
         }
         return cls(_model=model1, _device=dev, _model2=model2,
-                   _pos_conv_weights=pos_conv_w, _enc_norm_weights=enc_norm_w)
+                   _pos_conv_weights=pos_conv_w, _enc_norm_weights=enc_norm_w,
+                   _batch_size=batch_size)
 
     @classmethod
     def from_pretrained(
@@ -264,6 +275,7 @@ class AudioEncoder:
         model_id: str,
         device: str = "auto",
         cache_dir: str | None = None,
+        batch_size: int = 1,
     ) -> "AudioEncoder":
         """Load model from HuggingFace Hub or local path.
 
@@ -271,25 +283,34 @@ class AudioEncoder:
             model_id: HuggingFace model ID or local path to .safetensors/.pt file.
             device: "auto" (default), "gpu", or "cpu".
             cache_dir: Override default cache (~/.cache/mojo-audio/models/).
+            batch_size: Batch size for inference (default 1).
         """
         from ._weight_loader import load_weights
         weights = load_weights(model_id, cache_dir)
-        return cls._from_weights(weights, device=device)
+        return cls._from_weights(weights, device=device, batch_size=batch_size)
 
     def encode(self, audio: np.ndarray) -> np.ndarray:
         """Encode raw audio waveform to feature vectors.
 
         Args:
-            audio: Float32 numpy array, shape [1, samples], 16kHz, normalized [-1, 1].
+            audio: Float32 numpy array, shape [B, samples], 16kHz, normalized [-1, 1].
+                   B must match the batch_size used at construction time.
 
         Returns:
-            Float32 numpy array, shape [1, time_frames, 768].
-            For 1s audio: [1, 49, 768].
+            Float32 numpy array, shape [B, time_frames, 768].
+            For 1s audio at batch=1: [1, 49, 768].
         """
         from max.driver import Accelerator, Tensor
 
-        # Reshape to [1, L, 1, 1] NHWC format required by CNN
-        audio_in = audio.reshape(1, -1, 1, 1).astype(np.float32)
+        B = audio.shape[0]
+        if B != self._batch_size:
+            raise ValueError(
+                f"Input batch size {B} does not match model batch_size {self._batch_size}. "
+                f"Rebuild model with AudioEncoder._from_weights(..., batch_size={B})"
+            )
+
+        # Reshape to [B, L, 1, 1] NHWC format required by CNN
+        audio_in = audio.reshape(B, -1, 1, 1).astype(np.float32)
 
         # Transfer to GPU if needed
         if isinstance(self._device, Accelerator):
@@ -308,38 +329,35 @@ class AudioEncoder:
             if self._pos_conv_weights is not None and self._pos_conv_weights["weight"] is not None:
                 pw = self._pos_conv_weights["weight"]   # [768, 48, 128]
                 pb = self._pos_conv_weights["bias"]     # [768] or None
-                # features_np: [1, T, 768]
-                x_1t = features_np[0]  # [T, 768]
-                T = x_1t.shape[0]
+                # features_np: [B, T, 768]
                 C_in = 768
                 groups = 16
                 C_per_g = C_in // groups  # 48
                 K = pw.shape[2]           # 128
-                pad = K // 2             # 64
-                out_t = np.zeros((T, C_in), dtype=np.float32)
-                # Vectorized grouped conv via im2col: for each group, extract windows,
-                # then perform [T+1, K*C_per_g] @ [K*C_per_g, C_per_g_out] matmul.
-                for grp in range(groups):
-                    gs = grp * C_per_g
-                    ge = gs + C_per_g
-                    x_g = x_1t[:, gs:ge]  # [T, C_per_g]
-                    # Pad: [T+2*pad, C_per_g]
-                    x_g_pad = np.pad(x_g, ((pad, pad), (0, 0)))  # [T+128, C_per_g]
-                    # Build im2col matrix: [T+1, K, C_per_g]
-                    rows = np.stack([x_g_pad[t:t+K, :] for t in range(T + 1)], axis=0)  # [T+1, K, C_per_g]
-                    rows_2d = rows.reshape(T + 1, K * C_per_g)  # [T+1, K*C_per_g]
-                    # w_g: [C_per_g_out, C_per_g_in, K] → reshape to [K*C_per_g, C_per_g_out]
-                    w_g = pw[gs:ge, :, :]  # [C_per_g_out, C_per_g, K]
-                    w_2d = w_g.transpose(2, 1, 0).reshape(K * C_per_g, C_per_g)  # [K*C_per_g, C_per_g_out]
-                    # Output: [T+1, C_per_g_out] → trim last → [T, C_per_g_out]
-                    out_g = (rows_2d @ w_2d)[:T, :]  # [T, C_per_g_out]
-                    out_t[:, gs:ge] = out_g
-                if pb is not None:
-                    out_t += pb[np.newaxis, :]
-                # GELU activation (erf-based, matches PyTorch default)
+                pad = K // 2              # 64
                 from scipy.special import erf as scipy_erf
-                pos_np = (0.5 * out_t * (1.0 + scipy_erf(out_t / np.sqrt(2.0)))).astype(np.float32)
-                features_np = features_np + pos_np[np.newaxis, :, :]  # residual add [1, T, 768]
+
+                pos_batch = np.zeros_like(features_np)  # [B, T, 768]
+                for b in range(B):
+                    x_bt = features_np[b]  # [T, 768]
+                    T = x_bt.shape[0]
+                    out_t = np.zeros((T, C_in), dtype=np.float32)
+                    for grp in range(groups):
+                        gs = grp * C_per_g
+                        ge = gs + C_per_g
+                        x_g = x_bt[:, gs:ge]  # [T, C_per_g]
+                        x_g_pad = np.pad(x_g, ((pad, pad), (0, 0)))  # [T+128, C_per_g]
+                        rows = np.stack([x_g_pad[t:t+K, :] for t in range(T + 1)], axis=0)
+                        rows_2d = rows.reshape(T + 1, K * C_per_g)
+                        w_g = pw[gs:ge, :, :]
+                        w_2d = w_g.transpose(2, 1, 0).reshape(K * C_per_g, C_per_g)
+                        out_g = (rows_2d @ w_2d)[:T, :]
+                        out_t[:, gs:ge] = out_g
+                    if pb is not None:
+                        out_t += pb[np.newaxis, :]
+                    # GELU activation
+                    pos_batch[b] = (0.5 * out_t * (1.0 + scipy_erf(out_t / np.sqrt(2.0)))).astype(np.float32)
+                features_np = features_np + pos_batch  # residual add [B, T, 768]
 
             # Stage 3b: Encoder LayerNorm (numpy)
             if self._enc_norm_weights is not None and self._enc_norm_weights["weight"] is not None:
