@@ -181,3 +181,67 @@ class TestConvTranspose:
         """C_in=512, C_out=256, K=24, S=12, T_in=10 -> T_out=120."""
         out = self._run_conv_transpose(cpu_device, C_in=512, C_out=256, K=24, S=12, T_in=10)
         assert out.shape == (1, 120, 1, 256), f"Expected (1,120,1,256) got {out.shape}"
+
+
+class TestResBlock:
+    """Tests for HiFiGAN ResBlock (dilated conv residual blocks)."""
+
+    @pytest.fixture(scope="class")
+    def cpu_device(self):
+        from max.driver import CPU
+        return CPU()
+
+    @staticmethod
+    def _result_to_numpy(result):
+        """Extract numpy array from model.execute() result."""
+        v = list(result.values())[0] if isinstance(result, dict) else result[0]
+        return v.to_numpy() if hasattr(v, "to_numpy") else np.array(v)
+
+    @staticmethod
+    def _make_resblock_weights(rng, channels, kernel_size, dilations):
+        """Generate random ResBlock weights in PyTorch format."""
+        w = {}
+        for i in range(len(dilations)):
+            w[f"convs1.{i}.weight"] = rng.standard_normal(
+                (channels, channels, kernel_size)
+            ).astype(np.float32) * 0.01
+            w[f"convs1.{i}.bias"] = np.zeros(channels, dtype=np.float32)
+            w[f"convs2.{i}.weight"] = rng.standard_normal(
+                (channels, channels, kernel_size)
+            ).astype(np.float32) * 0.01
+            w[f"convs2.{i}.bias"] = np.zeros(channels, dtype=np.float32)
+        return w
+
+    def test_resblock_preserves_shape(self, cpu_device):
+        """ResBlock with K=3, dilations=[1,3,5] preserves [1,50,1,256]."""
+        from max import engine
+        from max.graph import Graph, TensorType, DeviceRef, Dim
+        from max.dtype import DType
+        from models._hifigan_graph import build_resblock
+
+        channels = 256
+        kernel_size = 3
+        dilations = [1, 3, 5]
+        T_in = 50
+
+        rng = np.random.default_rng(42)
+        weights = self._make_resblock_weights(rng, channels, kernel_size, dilations)
+
+        T = Dim("T")
+        dev = DeviceRef.CPU()
+        with Graph(
+            "test_resblock",
+            input_types=[TensorType(DType.float32, [1, T, 1, channels], dev)],
+        ) as g:
+            x = g.inputs[0]
+            out = build_resblock(x, weights, dilations=dilations, device_ref=dev)
+            g.output(out)
+
+        model = engine.InferenceSession(devices=[cpu_device]).load(g)
+        x_np = rng.standard_normal((1, T_in, 1, channels)).astype(np.float32) * 0.1
+        result = model.execute(x_np)
+        out_np = self._result_to_numpy(result)
+
+        assert out_np.shape == (1, T_in, 1, channels), (
+            f"Expected (1,{T_in},1,{channels}) got {out_np.shape}"
+        )

@@ -115,3 +115,117 @@ def conv_transpose_1d(x, w_pt: np.ndarray, b_np, *, stride: int, device_ref):
         out = ops.add(out, b)
 
     return out
+
+
+def leaky_relu(x, alpha=0.1, device_ref=None):
+    """LeakyReLU: where(x > 0, x, alpha*x)."""
+    zero = ops.constant(np.array(0.0, dtype=np.float32), device=device_ref)
+    alpha_const = ops.constant(
+        np.array(alpha, dtype=np.float32), device=device_ref
+    )
+    mask = ops.greater(x, zero)
+    return ops.where(mask, x, ops.mul(x, alpha_const))
+
+
+def _dilate_kernel(w_np: np.ndarray, dilation: int) -> np.ndarray:
+    """Expand a 1D kernel by inserting (dilation-1) zeros between elements.
+
+    Input:  [C_out, C_in, K]
+    Output: [C_out, C_in, K_eff] where K_eff = K + (K-1)*(dilation-1)
+    """
+    if dilation == 1:
+        return w_np
+    C_out, C_in, K = w_np.shape
+    K_eff = K + (K - 1) * (dilation - 1)
+    w_dilated = np.zeros((C_out, C_in, K_eff), dtype=w_np.dtype)
+    w_dilated[:, :, ::dilation] = w_np
+    return w_dilated
+
+
+def conv1d(x, w_np, b_np, dilation=1, device_ref=None):
+    """Conv1d via Conv2d with NHWC layout and W=1.
+
+    Input:  [B, T, 1, C_in]
+    Weight: PyTorch format [C_out, C_in, K] -> MAX RSCF [K_eff, 1, C_in, C_out]
+    Output: [B, T, 1, C_out] (same T due to dilated padding)
+
+    Dilation is handled by expanding the kernel with zero-insertion, since
+    MAX Engine does not support non-unit dilation in conv2d.
+
+    Args:
+        x: NHWC input [B, T, 1, C_in].
+        w_np: PyTorch Conv1d weight [C_out, C_in, K].
+        b_np: Optional bias [C_out] or None.
+        dilation: Dilation factor for the convolution.
+        device_ref: MAX DeviceRef.
+
+    Returns:
+        TensorValue [B, T, 1, C_out].
+    """
+    K = w_np.shape[2]
+
+    # Expand kernel for dilation (no-op when dilation=1)
+    w_dilated = _dilate_kernel(w_np, dilation)
+    K_eff = w_dilated.shape[2]
+
+    # "same" padding: ensures output T == input T
+    pad = (K_eff - 1) // 2
+
+    # Convert PyTorch [C_out, C_in, K_eff] to MAX RSCF [K_eff, 1, C_in, C_out]
+    w_max = np.transpose(w_dilated, (2, 1, 0))[:, np.newaxis, :, :]
+    w_const = ops.constant(w_max, device=device_ref)
+
+    # conv2d padding: (top, bottom, left, right) for NHWC [B, H, W, C]
+    # H=T axis gets the padding, W=1 axis gets none
+    out = ops.conv2d(
+        x, w_const, stride=(1, 1), dilation=(1, 1), padding=(pad, pad, 0, 0)
+    )
+
+    if b_np is not None:
+        b = ops.constant(b_np.reshape(1, 1, 1, -1), device=device_ref)
+        out = ops.add(out, b)
+
+    return out
+
+
+def build_resblock(x, weights, dilations, device_ref):
+    """HiFiGAN ResBlock type "1": sequential dilated-conv residual blocks.
+
+    For each dilation d in dilations:
+        residual = x
+        x = leaky_relu(x)
+        x = conv1d(x, convs1.{i}.weight, convs1.{i}.bias, dilation=d)
+        x = leaky_relu(x)
+        x = conv1d(x, convs2.{i}.weight, convs2.{i}.bias, dilation=1)
+        x = x + residual
+
+    Args:
+        x: NHWC input [B, T, 1, C].
+        weights: Dict with keys like "convs1.0.weight", "convs1.0.bias", etc.
+        dilations: List of dilation values, e.g. [1, 3, 5].
+        device_ref: MAX DeviceRef.
+
+    Returns:
+        TensorValue [B, T, 1, C] (same shape as input).
+    """
+    for i, d in enumerate(dilations):
+        residual = x
+        x = leaky_relu(x, device_ref=device_ref)
+        x = conv1d(
+            x,
+            weights[f"convs1.{i}.weight"],
+            weights.get(f"convs1.{i}.bias"),
+            dilation=d,
+            device_ref=device_ref,
+        )
+        x = leaky_relu(x, device_ref=device_ref)
+        x = conv1d(
+            x,
+            weights[f"convs2.{i}.weight"],
+            weights.get(f"convs2.{i}.bias"),
+            dilation=1,
+            device_ref=device_ref,
+        )
+        x = ops.add(x, residual)
+
+    return x
