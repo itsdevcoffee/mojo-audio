@@ -112,13 +112,10 @@ class AudioEncoder:
         features = model.encode(audio_np)  # [1, seq] -> [1, frames, 768]
     """
 
-    def __init__(self, _model, _device, _model2=None, _pos_conv_weights=None, _enc_norm_weights=None, _batch_size=1):
+    def __init__(self, _model, _device, _model2=None, _batch_size=1):
         self._model = _model   # CNN + feature projection graph
         self._device = _device
-        self._model2 = _model2  # Encoder norm + transformer blocks graph
-        # Pos conv weights stored for numpy-based computation (avoids MAX dynamic dim bug)
-        self._pos_conv_weights = _pos_conv_weights  # dict: weight, bias
-        self._enc_norm_weights = _enc_norm_weights  # dict: weight, bias (if separate from model2)
+        self._model2 = _model2  # Pos conv + encoder norm + transformer blocks graph
         self._batch_size = _batch_size
 
     @classmethod
@@ -228,18 +225,39 @@ class AudioEncoder:
             g1.output(x)
 
         # ---------------------------------------------------------------
-        # Graph 2: Encoder Norm + Transformer Blocks
-        # Input: [1, T, 768] (after pos_conv+gelu+residual, done in numpy) → Output: [1, T, 768]
+        # Graph 2: Pos Conv + Encoder Norm + Transformer Blocks
+        # Input: [B, T, 768] → Output: [B, T, 768]
         #
-        # MAX engine bug: conv2d with K=128 on dynamic Dim("T") input with C_in >= 48
-        # produces incorrect results. The pos_conv is therefore implemented in numpy
-        # (outside the MAX graph) to guarantee correctness.
+        # pos_conv now runs in MAX graph (conv2d groups bug fixed in modular/modular#6129).
         # ---------------------------------------------------------------
         with Graph(
             "encoder_transformer",
             input_types=[TensorType(DType.float32, [batch_size, Dim("T"), 768], device_ref)],
         ) as g2:
-            x = g2.inputs[0]  # [1, T, 768] after pos_conv + enc_norm
+            x = g2.inputs[0]  # [B, T, 768]
+
+            # Stage 3: Pos Conv — Conv1d(768, 768, K=128, groups=16, padding=64) + GELU + residual
+            # HuBERT's HubertSamePadLayer removes 1 element from right.
+            # Asymmetric pad (64 left, 63 right) makes conv output exactly T — no trim needed.
+            if "pos_conv.weight" in weights:
+                pos_w = _pt_weight_to_max(weights["pos_conv.weight"])  # [128, 1, 48, 768] RSCF
+                pos_x = ops.reshape(x, [batch_size, -1, 1, 768])      # [B, T, 1, 768] NHWC
+                pos_x = ops.pad(pos_x, [0, 0, 64, 63, 0, 0, 0, 0])  # [B, T+127, 1, 768]
+                pos_out = ops.conv2d(pos_x, _const(pos_w), stride=(1, 1), groups=16)
+                pos_out = ops.reshape(pos_out, [batch_size, -1, 768])  # [B, T, 768]
+                if "pos_conv.bias" in weights:
+                    pos_out = ops.add(pos_out, _const(weights["pos_conv.bias"]))
+                pos_out = ops.gelu(pos_out)
+                x = ops.add(x, pos_out)  # residual
+
+            # Stage 3b: Encoder LayerNorm
+            if "enc_norm.weight" in weights:
+                x = ops.layer_norm(
+                    x,
+                    _const(weights["enc_norm.weight"]),
+                    _const(weights["enc_norm.bias"]),
+                    1e-5,
+                )
 
             # Stage 4: 12x Transformer Encoder Blocks (post-norm architecture)
             for i in range(12):
@@ -256,17 +274,7 @@ class AudioEncoder:
         model1 = session.load(g1)
         model2 = session.load(g2)
 
-        # Store pos_conv and enc_norm weights for numpy-based computation
-        pos_conv_w = {
-            "weight": weights["pos_conv.weight"].copy() if "pos_conv.weight" in weights else None,
-            "bias": weights["pos_conv.bias"].copy() if "pos_conv.bias" in weights else None,
-        }
-        enc_norm_w = {
-            "weight": weights["enc_norm.weight"].copy() if "enc_norm.weight" in weights else None,
-            "bias": weights["enc_norm.bias"].copy() if "enc_norm.bias" in weights else None,
-        }
         return cls(_model=model1, _device=dev, _model2=model2,
-                   _pos_conv_weights=pos_conv_w, _enc_norm_weights=enc_norm_w,
                    _batch_size=batch_size)
 
     @classmethod
@@ -324,51 +332,7 @@ class AudioEncoder:
         features_np = features.to_numpy()  # [1, T, 768]
 
         if self._model2 is not None:
-            # Stage 3: Pos Conv (numpy, avoids MAX dynamic-dim conv2d bug with K=128, C>=48)
-            # HuBERT: Conv1d(768, 768, K=128, groups=16, padding=64) + HubertSamePadLayer(-1)
-            if self._pos_conv_weights is not None and self._pos_conv_weights["weight"] is not None:
-                pw = self._pos_conv_weights["weight"]   # [768, 48, 128]
-                pb = self._pos_conv_weights["bias"]     # [768] or None
-                # features_np: [B, T, 768]
-                C_in = 768
-                groups = 16
-                C_per_g = C_in // groups  # 48
-                K = pw.shape[2]           # 128
-                pad = K // 2              # 64
-                from scipy.special import erf as scipy_erf
-
-                pos_batch = np.zeros_like(features_np)  # [B, T, 768]
-                for b in range(B):
-                    x_bt = features_np[b]  # [T, 768]
-                    T = x_bt.shape[0]
-                    out_t = np.zeros((T, C_in), dtype=np.float32)
-                    for grp in range(groups):
-                        gs = grp * C_per_g
-                        ge = gs + C_per_g
-                        x_g = x_bt[:, gs:ge]  # [T, C_per_g]
-                        x_g_pad = np.pad(x_g, ((pad, pad), (0, 0)))  # [T+128, C_per_g]
-                        rows = np.stack([x_g_pad[t:t+K, :] for t in range(T + 1)], axis=0)
-                        rows_2d = rows.reshape(T + 1, K * C_per_g)
-                        w_g = pw[gs:ge, :, :]
-                        w_2d = w_g.transpose(2, 1, 0).reshape(K * C_per_g, C_per_g)
-                        out_g = (rows_2d @ w_2d)[:T, :]
-                        out_t[:, gs:ge] = out_g
-                    if pb is not None:
-                        out_t += pb[np.newaxis, :]
-                    # GELU activation
-                    pos_batch[b] = (0.5 * out_t * (1.0 + scipy_erf(out_t / np.sqrt(2.0)))).astype(np.float32)
-                features_np = features_np + pos_batch  # residual add [B, T, 768]
-
-            # Stage 3b: Encoder LayerNorm (numpy)
-            if self._enc_norm_weights is not None and self._enc_norm_weights["weight"] is not None:
-                gamma = self._enc_norm_weights["weight"]  # [768]
-                beta = self._enc_norm_weights["bias"]     # [768]
-                mean = features_np.mean(axis=-1, keepdims=True)
-                var = ((features_np - mean) ** 2).mean(axis=-1, keepdims=True)
-                features_np = ((features_np - mean) / np.sqrt(var + 1e-5)).astype(np.float32)
-                features_np = (features_np * gamma + beta).astype(np.float32)
-
-            # Graph 2: Transformer Blocks → [1, T, 768]
+            # Graph 2: Pos Conv + Encoder Norm + Transformer Blocks → [B, T, 768]
             if isinstance(self._device, Accelerator):
                 feat_in = Buffer.from_numpy(np.ascontiguousarray(features_np)).to(self._device)
             else:
