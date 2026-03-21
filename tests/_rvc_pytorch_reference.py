@@ -5,12 +5,16 @@ numerical comparison testing against our MAX implementation.
 
 Source: https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI
 Files:  infer/lib/infer_pack/models.py, modules.py, commons.py
+
+Extended with enc_p, flow, and full VITS inference functions that load the
+VITS submodules directly from Applio (path: /home/maskkiller/repos/Applio).
 """
 
 from __future__ import annotations
 
 import math
-from typing import Optional
+import sys
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -18,6 +22,15 @@ import torch.nn.functional as F
 from torch import nn
 from torch.nn import Conv1d, ConvTranspose1d
 from torch.nn.utils import remove_weight_norm, weight_norm
+
+# ---------------------------------------------------------------------------
+# Applio path — add so we can import TextEncoder, ResidualCouplingBlock etc.
+# Only the leaf algorithm modules are imported (not synthesizers.py, which
+# pulls in torchaudio via refinegan which is not available in this env).
+# ---------------------------------------------------------------------------
+_APPLIO_PATH = "/home/maskkiller/repos/Applio"
+if _APPLIO_PATH not in sys.path:
+    sys.path.insert(0, _APPLIO_PATH)
 
 # ---------------------------------------------------------------------------
 # Utilities from commons.py
@@ -550,3 +563,245 @@ def run_pytorch_reference(
 
     # Squeeze channel dim -> [B, T_audio]
     return audio.squeeze(1).numpy()
+
+
+# ---------------------------------------------------------------------------
+# VITS submodel helpers
+# ---------------------------------------------------------------------------
+
+def _load_vits_submodels(
+    checkpoint_path: str,
+    sr_tag: str = "48k",
+):
+    """Load enc_p, flow, emb_g and dec from an RVC v2 checkpoint.
+
+    Returns a tuple ``(enc_p, flow, emb_g, dec)`` all in eval mode.
+
+    This avoids importing ``Synthesizer`` directly (which triggers a
+    torchaudio import via refinegan that is not installed in this env).
+    Instead we construct the submodules manually using the same
+    hyperparameters as the Synthesizer constructor, then load from the
+    checkpoint state dict.
+    """
+    from rvc.lib.algorithm.encoders import TextEncoder
+    from rvc.lib.algorithm.residuals import ResidualCouplingBlock
+
+    sr = _SR_TABLE.get(sr_tag, 48000)
+
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    state = ckpt.get("weight", ckpt)
+
+    # Infer spk_embed_dim from the checkpoint itself
+    spk_embed_dim = state["emb_g.weight"].shape[0]
+    gin_channels = 256
+    inter_channels = 192
+    hidden_channels = 192
+
+    # Build submodules with RVC v2 default hyperparameters
+    enc_p = TextEncoder(
+        out_channels=inter_channels,
+        hidden_channels=hidden_channels,
+        filter_channels=768,
+        n_heads=2,
+        n_layers=6,
+        kernel_size=3,
+        p_dropout=0,
+        embedding_dim=768,
+        f0=True,
+    )
+    flow = ResidualCouplingBlock(
+        channels=inter_channels,
+        hidden_channels=hidden_channels,
+        kernel_size=5,
+        dilation_rate=1,
+        n_layers=3,
+        gin_channels=gin_channels,
+    )
+    emb_g = nn.Embedding(spk_embed_dim, gin_channels)
+    dec = load_rvc_generator(checkpoint_path, sr_tag=sr_tag)
+
+    # Load weights
+    def _load_prefix(module: nn.Module, prefix: str) -> None:
+        sub = {k[len(prefix):]: v.float() for k, v in state.items() if k.startswith(prefix)}
+        module.load_state_dict(sub)
+
+    _load_prefix(enc_p, "enc_p.")
+    _load_prefix(flow, "flow.")
+    _load_prefix(emb_g, "emb_g.")
+
+    enc_p.eval()
+    flow.eval()
+    emb_g.eval()
+
+    return enc_p, flow, emb_g, dec
+
+
+# ---------------------------------------------------------------------------
+# enc_p reference function
+# ---------------------------------------------------------------------------
+
+
+def run_enc_p_reference(
+    checkpoint_path: str,
+    features: np.ndarray,
+    pitch: np.ndarray,
+    sr_tag: str = "48k",
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Run the RVC TextEncoder (enc_p) and return (mean, logvar, mask).
+
+    Args:
+        checkpoint_path: Path to an RVC ``.pth`` file.
+        features: ``[B, T, 768]`` float32 HuBERT/content features.
+        pitch: ``[B, T]`` int64 quantised pitch tokens (0-255).
+        sr_tag: Sample-rate tag (``"32k"``, ``"40k"``, ``"48k"``).
+
+    Returns:
+        Tuple of three numpy arrays:
+        - ``m_p``: mean, shape ``[B, 192, T]``
+        - ``logs_p``: log-variance, shape ``[B, 192, T]``
+        - ``x_mask``: sequence mask, shape ``[B, 1, T]``
+    """
+    enc_p, _, _, _ = _load_vits_submodels(checkpoint_path, sr_tag)
+
+    phone = torch.from_numpy(features).float()         # [B, T, 768]
+    pitch_t = torch.from_numpy(pitch).long()           # [B, T]
+    B, T = pitch_t.shape
+    lengths = torch.full((B,), T, dtype=torch.long)    # [B]
+
+    with torch.no_grad():
+        m_p, logs_p, x_mask = enc_p(phone, pitch_t, lengths)
+
+    return m_p.numpy(), logs_p.numpy(), x_mask.numpy()
+
+
+# ---------------------------------------------------------------------------
+# flow reference function
+# ---------------------------------------------------------------------------
+
+
+def run_flow_reference(
+    checkpoint_path: str,
+    z_p: np.ndarray,
+    mask: np.ndarray,
+    sid: int = 0,
+    sr_tag: str = "48k",
+) -> np.ndarray:
+    """Run the RVC normalising flow (reverse pass) and return the latent z.
+
+    Args:
+        checkpoint_path: Path to an RVC ``.pth`` file.
+        z_p: ``[B, 192, T]`` float32 latent in the prior space.
+        mask: ``[B, 1, T]`` float32 sequence mask from enc_p.
+        sid: Speaker index (default 0).
+        sr_tag: Sample-rate tag (``"32k"``, ``"40k"``, ``"48k"``).
+
+    Returns:
+        ``[B, 192, T]`` float32 numpy array — the decoded latent z.
+    """
+    _, flow, emb_g, _ = _load_vits_submodels(checkpoint_path, sr_tag)
+
+    z_p_t = torch.from_numpy(z_p).float()       # [B, 192, T]
+    mask_t = torch.from_numpy(mask).float()     # [B, 1, T]
+    g = emb_g(torch.tensor([sid])).unsqueeze(-1)  # [1, 256, 1]
+
+    with torch.no_grad():
+        z = flow(z_p_t, mask_t, g=g, reverse=True)
+
+    return z.numpy()
+
+
+# ---------------------------------------------------------------------------
+# Full VITS inference reference function
+# ---------------------------------------------------------------------------
+
+
+def run_full_vits_reference(
+    checkpoint_path: str,
+    features: np.ndarray,
+    pitch: np.ndarray,
+    pitchf: np.ndarray,
+    sid: int = 0,
+    sr_tag: str = "48k",
+) -> np.ndarray:
+    """Run the complete VITS inference pipeline and return generated audio.
+
+    Replicates ``Synthesizer.infer()`` end-to-end:
+    enc_p → sample z_p → flow (reverse) → dec (HiFiGAN-NSF).
+
+    Args:
+        checkpoint_path: Path to an RVC ``.pth`` file.
+        features: ``[B, T, 768]`` float32 HuBERT/content features.
+        pitch: ``[B, T]`` int64 quantised pitch tokens (0-255).
+        pitchf: ``[B, T]`` float32 continuous F0 values (Hz).
+        sid: Speaker index (default 0).
+        sr_tag: Sample-rate tag (``"32k"``, ``"40k"``, ``"48k"``).
+
+    Returns:
+        ``[B, T_audio]`` float32 numpy array of synthesised audio.
+    """
+    enc_p, flow, emb_g, dec = _load_vits_submodels(checkpoint_path, sr_tag)
+
+    phone = torch.from_numpy(features).float()         # [B, T, 768]
+    pitch_t = torch.from_numpy(pitch).long()           # [B, T]
+    pitchf_t = torch.from_numpy(pitchf).float()        # [B, T]
+    B, T = pitch_t.shape
+    lengths = torch.full((B,), T, dtype=torch.long)    # [B]
+
+    g = emb_g(torch.tensor([sid])).unsqueeze(-1)       # [1, 256, 1]
+
+    with torch.no_grad():
+        # 1. Encode phoneme + pitch features
+        m_p, logs_p, x_mask = enc_p(phone, pitch_t, lengths)
+
+        # 2. Sample z_p from the prior (same formula as Synthesizer.infer)
+        z_p = (m_p + torch.exp(logs_p) * torch.randn_like(m_p) * 0.66666) * x_mask
+
+        # 3. Flow inverse: z_p → z
+        z = flow(z_p, x_mask, g=g, reverse=True)
+
+        # 4. Decode: z → audio via NSF-HiFiGAN decoder
+        audio = dec(z * x_mask, pitchf_t, g=g)         # [B, 1, T_audio]
+
+    return audio.squeeze(1).numpy()                     # [B, T_audio]
+
+
+# ---------------------------------------------------------------------------
+# Smoke test
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import os
+
+    CKPT = os.path.expanduser(
+        "~/Downloads/voice files/extracted/theweeknd biggest data set/theweekv1.pth"
+    )
+
+    T = 20
+    B = 1
+    rng = np.random.default_rng(42)
+
+    features = rng.standard_normal((B, T, 768)).astype(np.float32)
+    pitch = rng.integers(0, 256, (B, T)).astype(np.int64)
+    pitchf = (rng.random((B, T)) * 500).astype(np.float32)
+
+    print("=== enc_p reference ===")
+    m_p, logs_p, x_mask = run_enc_p_reference(CKPT, features, pitch, sr_tag="48k")
+    print(f"  m_p:    {m_p.shape}  nan={np.isnan(m_p).any()}")
+    print(f"  logs_p: {logs_p.shape}  nan={np.isnan(logs_p).any()}")
+    print(f"  x_mask: {x_mask.shape}  nan={np.isnan(x_mask).any()}")
+    assert not np.isnan(m_p).any(), "NaN in m_p"
+    assert not np.isnan(logs_p).any(), "NaN in logs_p"
+
+    print("\n=== flow reference ===")
+    # Build a valid z_p from m_p / logs_p so we exercise realistic values
+    z_p_in = (m_p + np.exp(logs_p) * rng.standard_normal(m_p.shape).astype(np.float32) * 0.66666) * x_mask
+    z_out = run_flow_reference(CKPT, z_p_in, x_mask, sid=0, sr_tag="48k")
+    print(f"  z:      {z_out.shape}  nan={np.isnan(z_out).any()}")
+    assert not np.isnan(z_out).any(), "NaN in flow output"
+
+    print("\n=== full VITS inference ===")
+    audio = run_full_vits_reference(CKPT, features, pitch, pitchf, sid=0, sr_tag="48k")
+    print(f"  audio:  {audio.shape}  nan={np.isnan(audio).any()}")
+    assert not np.isnan(audio).any(), "NaN in audio"
+
+    print("\nAll smoke tests passed.")
