@@ -36,6 +36,7 @@ REVISED_*.md
 SOLUTION_*.md
 FIX_*.md
 .worktrees/
+.superpowers/
 
 experiments/hubert-max/*.onnx
 experiments/hubert-max/*.npz

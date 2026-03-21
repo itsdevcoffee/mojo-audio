@@ -34,7 +34,7 @@ def _flip_conv_transpose_1d_weights(w_pt: np.ndarray) -> np.ndarray:
 
 
 def conv_transpose_1d(x, w_pt: np.ndarray, b_np, *, stride: int, device_ref):
-    """Generalized ConvTranspose1d via zero-interleave + regular conv2d.
+    """Generalized ConvTranspose1d via zero-interleave + im2col matmul.
 
     Equivalent to PyTorch ConvTranspose1d(C_in, C_out, K, stride=S, padding=(K-S)//2)
     which produces T_out = T_in * S exactly.
@@ -44,16 +44,8 @@ def conv_transpose_1d(x, w_pt: np.ndarray, b_np, *, stride: int, device_ref):
 
     Algorithm:
       1. Zero-interleave: insert (S-1) zeros between each time step along T.
-         - Unsqueeze: [B, T, 1, C] -> squeeze batch -> [T, 1, C]
-         - Unsqueeze slot: [T, 1, 1, C]
-         - Pad with S-1 zeros: [T, S, 1, C]
-         - Reshape to merge T*S: [T*S, 1, C]
-         - Unsqueeze batch back: [1, T*S, 1, C]
-      2. Regular conv2d with flipped kernel and appropriate padding.
-         Since the interleave includes S-1 trailing zeros:
-           pad_left  = (K + S - 2) // 2
-           pad_right = (K - S) // 2
-         This ensures conv2d output = T*S + pad_left + pad_right - K + 1 = T*S.
+      2. im2col + matmul with flipped kernel (avoids ops.conv2d which is buggy
+         for C_in >= 8, modular/modular#6248).
 
     Args:
         x: NHWC input [B, T, 1, C_in]. B must be 1.
@@ -67,50 +59,62 @@ def conv_transpose_1d(x, w_pt: np.ndarray, b_np, *, stride: int, device_ref):
     """
     S = stride
     C_in_val = w_pt.shape[0]
+    C_out_val = w_pt.shape[1]
     K = w_pt.shape[2]
 
     _T = x.shape[1]  # dynamic symbolic dim
+    T_out = _T * S
 
     # --- Step 1: Zero-interleave along T with stride S ---
-    # squeeze batch-1 dim
     x_sq = ops.squeeze(x, 0)  # [T, 1, C]
-
-    # Insert a 1-slot after T for zero-interleaving
     x_ins = ops.unsqueeze(x_sq, 1)  # [T, 1, 1, C]
-
-    # Pad that dim with S-1 zeros: [T, 1, 1, C] -> [T, S, 1, C]
-    # pad format for 4D: [dim3_before, dim3_after, dim2_before, dim2_after, dim1_before, dim1_after, dim0_before, dim0_after]
-    # We want to pad dim1 (the "1" we just inserted) with S-1 after.
     x_pad = ops.pad(x_ins, [0, 0, 0, 0, 0, S - 1, 0, 0])  # [T, S, 1, C]
-
-    # Reshape to merge T and S: [T*S, 1, C]
-    x_merged = ops.reshape(x_pad, [_T * S, 1, C_in_val])  # [T*S, 1, C]
-
-    # Unsqueeze batch back
+    x_merged = ops.reshape(x_pad, [T_out, 1, C_in_val])  # [T*S, 1, C]
     x_zi = ops.unsqueeze(x_merged, 0)  # [1, T*S, 1, C]
 
-    # --- Step 2: Regular conv2d with flipped weights and padding ---
-    # The zero-interleave above produces T*S samples including S-1 trailing
-    # zeros after the last real sample.  The mathematically correct padding
-    # for the subsequent regular conv (to reproduce PyTorch ConvTranspose1d
-    # with padding=(K-S)//2, i.e. T_out = T_in * S exactly) is:
-    #
-    #   Without trailing zeros the interleaved length would be T*S - S + 1,
-    #   needing symmetric padding of (K + S - 2) / 2 on each side.
-    #   The S-1 extra trailing zeros shift the right side, so:
-    #     pad_left  = (K + S - 2) // 2
-    #     pad_right = (K - S) // 2
-    #
-    # Verify: conv2d output = T*S + pad_left + pad_right - K + 1 = T*S.
+    # --- Step 2: im2col + matmul with flipped kernel ---
+    # Asymmetric padding for ConvTranspose1d:
     pad_left = (K + S - 2) // 2
     pad_right = (K - S) // 2
 
-    w_max = _flip_conv_transpose_1d_weights(w_pt)  # [K, 1, C_in, C_out]
-    w_const = ops.constant(w_max, device=device_ref)
+    # Squeeze W dim for im2col: [1, T*S, C_in]
+    x_flat = ops.squeeze(x_zi, 2)
 
-    # conv2d padding: (top, bottom, left, right) for NHWC [B, H, W, C]
-    # H=T axis gets the padding, W=1 axis gets no padding
-    out = ops.conv2d(x_zi, w_const, stride=(1, 1), padding=(pad_left, pad_right, 0, 0))
+    # Pad along T: [1, T*S + pad_left + pad_right, C_in]
+    if pad_left > 0 or pad_right > 0:
+        x_flat = ops.pad(x_flat, [0, 0, pad_left, pad_right, 0, 0])
+
+    # im2col: extract K shifted slices
+    slices = []
+    for k in range(K):
+        s = ops.slice_tensor(
+            x_flat,
+            [slice(None), slice(k, k + T_out), slice(None)],
+        )
+        slices.append(s)
+
+    # Concat along channel dim: [1, T*S, K * C_in]
+    if K == 1:
+        x_cols = slices[0]
+    else:
+        x_cols = ops.concat(slices, axis=2)
+
+    # Weight: flip kernel and reshape for matmul
+    # PyTorch ConvTranspose weight: [C_in, C_out, K]
+    # Flip kernel: w[:, :, ::-1]
+    w_flipped = w_pt[:, :, ::-1].copy()
+    # Reshape: for each kernel position k, we want w[c_in, c_out, k]
+    # im2col ordering: [k=0, c_in=0], [k=0, c_in=1], ..., [k=K-1, c_in=C_in-1]
+    # Need w_mat[k*C_in + c_in, c_out] = w_flipped[c_in, c_out, k]
+    # => transpose to [K, C_in, C_out], reshape to [K*C_in, C_out]
+    w_mat = np.transpose(w_flipped, (2, 0, 1)).reshape(K * C_in_val, C_out_val)
+    w_const = ops.constant(w_mat.astype(np.float32), device=device_ref)
+
+    # Matmul: [1, T*S, K*C_in] @ [K*C_in, C_out] -> [1, T*S, C_out]
+    out = ops.matmul(x_cols, w_const)
+
+    # Unsqueeze W dim back: [1, T*S, 1, C_out]
+    out = ops.unsqueeze(out, 2)
 
     if b_np is not None:
         b = ops.constant(b_np.reshape(1, 1, 1, -1), device=device_ref)
@@ -228,10 +232,16 @@ def conv1d(x, w_np, b_np, dilation=1, device_ref=None):
         b = ops.constant(b_np.reshape(1, 1, 1, -1), device=device_ref)
         out = ops.add(out, b)
 
-    # Rebind output to match input's symbolic shape — the im2col slicing creates
+    # Rebind output to reconcile the T dimension only — im2col slicing creates
     # new symbolic dims that MAX can't prove equal to the original Dim("T").
     # Without this, ResBlock residual ops.add(x, residual) fails compilation.
-    out = ops.rebind(out, x.shape, message="conv1d: reconcile T dim after im2col")
+    # Use input's batch & T dims but output's correct channel count (C_out).
+    C_out = w_np.shape[0]
+    out = ops.rebind(
+        out,
+        [x.shape[0], x.shape[1], 1, C_out],
+        message="conv1d: reconcile T dim after im2col",
+    )
 
     return out
 
@@ -280,10 +290,19 @@ def build_resblock(x, weights, dilations, device_ref):
 
 
 def _noise_conv(excitation, w_np, b_np, stride, device_ref):
-    """Strided Conv1d for downsampling excitation signal to match upsample resolution.
+    """Strided Conv1d for downsampling excitation signal via im2col + matmul.
 
-    Converts PyTorch Conv1d weight [C_out, C_in, K] to MAX RSCF [K, 1, C_in, C_out].
-    Uses stride on the H (time) axis only.
+    Avoids ops.conv2d which triggers MAX compiler errors ("All operation types
+    must have the same shape") when multiple conv2d ops with different strides
+    coexist in the same graph.
+
+    For C_in=1 and K divisible by stride, exploits reshape to extract
+    stride-spaced input samples without slice stepping:
+      1. Pad input along T for "same"-style downsampling
+      2. For each block b (K/stride blocks), slice a Ta-length region and
+         reshape to [B, T_out, stride] — columns give stride-spaced samples
+      3. Concatenate blocks → [B, T_out, K]
+      4. Matmul with [K, C_out] → [B, T_out, C_out]
 
     Args:
         excitation: NHWC input [B, Ta, 1, 1].
@@ -297,32 +316,54 @@ def _noise_conv(excitation, w_np, b_np, stride, device_ref):
     """
     K = w_np.shape[2]
     C_out = w_np.shape[0]
-    C_in = w_np.shape[1]
 
-    # MAX Engine doesn't support conv2d with K=1 and C_in=1 (RSCF layout
-    # transform bug). Work around by zero-padding the kernel to K=3.
+    # K=1 → pad to K=3 (same workaround as before for single-tap kernels)
     if K == 1:
-        w_padded = np.zeros((C_out, C_in, 3), dtype=w_np.dtype)
-        w_padded[:, :, 1] = w_np[:, :, 0]  # center the single tap
+        w_padded = np.zeros((C_out, 1, 3), dtype=w_np.dtype)
+        w_padded[:, :, 1] = w_np[:, :, 0]
         w_np = w_padded
         K = 3
 
-    # Padding to achieve exact downsampling: T_out = T_in / stride.
-    # With pad = (K - stride) // 2: output = (T_in + 2*pad - K) / stride + 1
-    #   = (T_in + K - stride - K) / stride + 1 = T_in / stride.
-    # When K == stride (common case), pad = 0.
-    pad = (K - stride) // 2
+    S = max(stride, 1)
+    pad = (K - S) // 2
+    orig_Ta = excitation.shape[1]  # symbolic
 
-    # PyTorch [C_out, C_in, K] -> MAX RSCF [K, 1, C_in, C_out]
-    w_max = np.transpose(w_np, (2, 1, 0))[:, np.newaxis, :, :]
-    w_const = ops.constant(w_max, device=device_ref)
+    # Squeeze to [B, Ta, 1] then [B, Ta]
+    x = ops.squeeze(excitation, 3)  # [B, Ta, 1]
+    x = ops.squeeze(x, 2)  # [B, Ta]
 
-    out = ops.conv2d(
-        excitation, w_const,
-        stride=(stride, 1),
-        dilation=(1, 1),
-        padding=(pad, pad, 0, 0),
-    )
+    # Pad along T: [B, Ta + 2*pad]
+    if pad > 0:
+        x = ops.pad(x, [0, 0, pad, pad])
+
+    # Build im2col blocks: K must be divisible by S
+    n_blocks = K // S
+    T_out = orig_Ta // S
+    blocks = []
+    for b in range(n_blocks):
+        # Slice a Ta-length region starting at b*S
+        blk = ops.slice_tensor(x, [slice(None), slice(b * S, b * S + orig_Ta)])
+        # Rebind to assert Ta is divisible by S, then reshape
+        blk = ops.rebind(blk, [excitation.shape[0], T_out * S],
+                         message=f"noise_conv: assert Ta divisible by stride {S}")
+        blk = ops.reshape(blk, [excitation.shape[0], T_out, S])
+        blocks.append(blk)
+
+    # Concatenate blocks: [B, T_out, K]
+    if len(blocks) == 1:
+        x_cols = blocks[0]
+    else:
+        x_cols = ops.concat(blocks, axis=2)
+
+    # Weight: [C_out, 1, K] -> [K, C_out]
+    w_mat = w_np[: , 0, :].T.astype(np.float32)  # [K, C_out]
+    w_const = ops.constant(w_mat, device=device_ref)
+
+    # Matmul: [B, T_out, K] @ [K, C_out] -> [B, T_out, C_out]
+    out = ops.matmul(x_cols, w_const)
+
+    # Unsqueeze to NHWC: [B, T_out, 1, C_out]
+    out = ops.unsqueeze(out, 2)
 
     if b_np is not None:
         b = ops.constant(b_np.reshape(1, 1, 1, -1), device=device_ref)

@@ -291,9 +291,10 @@ def _make_full_hifigan_weights(rng, config):
         ).astype(np.float32) * scale
         w[f"ups.{i}.bias"] = np.zeros(ch_next, dtype=np.float32)
 
-        # noise_conv: Conv1d(1, ch_next, K=noise_stride or 1)
+        # noise_conv: Conv1d(1, ch_next, K=stride_f0*2 or 1)
+        # Matches PyTorch RVC: kernel_size=stride_f0*2 for i < num_ups-1, else 1
         noise_stride = reduce(operator.mul, upsample_rates[i + 1:], 1)
-        noise_k = max(noise_stride, 1)
+        noise_k = noise_stride * 2 if noise_stride > 1 else 1
         # PyTorch Conv1d: [C_out, C_in, K]
         w[f"noise_convs.{i}.weight"] = rng.standard_normal(
             (ch_next, 1, noise_k)
