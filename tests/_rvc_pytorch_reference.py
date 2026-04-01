@@ -13,6 +13,7 @@ VITS submodules directly from Applio (path: /home/maskkiller/repos/Applio).
 from __future__ import annotations
 
 import math
+import os
 import sys
 from typing import Optional, Tuple
 
@@ -28,7 +29,8 @@ from torch.nn.utils import remove_weight_norm, weight_norm
 # Only the leaf algorithm modules are imported (not synthesizers.py, which
 # pulls in torchaudio via refinegan which is not available in this env).
 # ---------------------------------------------------------------------------
-_APPLIO_PATH = "/home/maskkiller/repos/Applio"
+_APPLIO_CANDIDATES = ["/home/maskkiller/repos/Applio", "/home/visage/repos/Applio"]
+_APPLIO_PATH = next((p for p in _APPLIO_CANDIDATES if os.path.isdir(p)), _APPLIO_CANDIDATES[0])
 if _APPLIO_PATH not in sys.path:
     sys.path.insert(0, _APPLIO_PATH)
 
