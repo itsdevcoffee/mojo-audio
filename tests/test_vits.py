@@ -786,3 +786,353 @@ class TestFlowNumericalValidation:
 
         assert max_diff < 1e-3, f"Max diff {max_diff} exceeds tolerance 1e-3"
         assert correlation > 0.999, f"Correlation {correlation} below 0.999"
+
+
+# ======================================================================
+# enc_p graph tests (Task 4)
+# ======================================================================
+
+
+def _make_enc_p_weights(rng, config):
+    """Generate random weights for the TextEncoder (enc_p).
+
+    Returns a dict with all the keys expected by build_enc_p_graph:
+      emb_phone.weight [hidden, 768], emb_phone.bias [hidden]
+      emb_pitch.weight [256, hidden]
+      encoder.attn_layers.{i}.conv_{q,k,v,o}.weight [hidden, hidden, 1] / .bias [hidden]
+      encoder.attn_layers.{i}.emb_rel_k [1, 2*window+1, head_dim]
+      encoder.attn_layers.{i}.emb_rel_v [1, 2*window+1, head_dim]
+      encoder.norm_layers_{1,2}.{i}.gamma [hidden] / .beta [hidden]
+      encoder.ffn_layers.{i}.conv_1.weight [filter, hidden, k] / .bias [filter]
+      encoder.ffn_layers.{i}.conv_2.weight [hidden, filter, k] / .bias [hidden]
+      proj.weight [2*out, hidden, 1] / .bias [2*out]
+    """
+    hidden = config["hidden_channels"]
+    filter_ch = config["filter_channels"]
+    n_heads = config["n_heads"]
+    n_layers = config["n_layers"]
+    kernel_size = config["kernel_size"]
+    window_size = config["window_size"]
+    out_ch = config["out_channels"]
+    head_dim = hidden // n_heads
+    scale = 0.02  # small init for stability
+
+    w = {}
+
+    # Phone embedding: Linear(768, hidden)
+    w["emb_phone.weight"] = rng.standard_normal((hidden, 768)).astype(np.float32) * scale
+    w["emb_phone.bias"] = np.zeros(hidden, dtype=np.float32)
+
+    # Pitch embedding: Embedding(256, hidden)
+    w["emb_pitch.weight"] = rng.standard_normal((256, hidden)).astype(np.float32) * scale
+
+    # Encoder layers
+    for i in range(n_layers):
+        # Attention Conv1d projections (k=1)
+        for conv in ["conv_q", "conv_k", "conv_v", "conv_o"]:
+            w[f"encoder.attn_layers.{i}.{conv}.weight"] = (
+                rng.standard_normal((hidden, hidden, 1)).astype(np.float32) * scale
+            )
+            w[f"encoder.attn_layers.{i}.{conv}.bias"] = np.zeros(hidden, dtype=np.float32)
+
+        # Relative position embeddings
+        rel_std = head_dim ** -0.5
+        n_rel = 2 * window_size + 1
+        w[f"encoder.attn_layers.{i}.emb_rel_k"] = (
+            rng.standard_normal((1, n_rel, head_dim)).astype(np.float32) * rel_std
+        )
+        w[f"encoder.attn_layers.{i}.emb_rel_v"] = (
+            rng.standard_normal((1, n_rel, head_dim)).astype(np.float32) * rel_std
+        )
+
+        # Layer norms
+        for ln in ["norm_layers_1", "norm_layers_2"]:
+            w[f"encoder.{ln}.{i}.gamma"] = np.ones(hidden, dtype=np.float32)
+            w[f"encoder.{ln}.{i}.beta"] = np.zeros(hidden, dtype=np.float32)
+
+        # FFN: Conv1d(hidden, filter, k) -> Conv1d(filter, hidden, k)
+        pad = (kernel_size - 1) // 2
+        w[f"encoder.ffn_layers.{i}.conv_1.weight"] = (
+            rng.standard_normal((filter_ch, hidden, kernel_size)).astype(np.float32) * scale
+        )
+        w[f"encoder.ffn_layers.{i}.conv_1.bias"] = np.zeros(filter_ch, dtype=np.float32)
+        w[f"encoder.ffn_layers.{i}.conv_2.weight"] = (
+            rng.standard_normal((hidden, filter_ch, kernel_size)).astype(np.float32) * scale
+        )
+        w[f"encoder.ffn_layers.{i}.conv_2.bias"] = np.zeros(hidden, dtype=np.float32)
+
+    # Projection: Conv1d(hidden, 2*out_ch, k=1)
+    w["proj.weight"] = rng.standard_normal((2 * out_ch, hidden, 1)).astype(np.float32) * scale
+    w["proj.bias"] = np.zeros(2 * out_ch, dtype=np.float32)
+
+    return w
+
+
+def _prepare_enc_p_inputs(rng, weights, config, T_val=20, batch_size=1):
+    """Prepare all inputs for the enc_p graph including relative attention biases.
+
+    Returns a list of numpy arrays in the order expected by the graph.
+    """
+    import math as _math
+
+    hidden = config["hidden_channels"]
+
+    features = rng.standard_normal((batch_size, T_val, 768)).astype(np.float32) * 0.1
+    pitch = rng.integers(0, 256, (batch_size, T_val)).astype(np.int32)
+    lengths = np.array([T_val] * batch_size, dtype=np.int32)
+
+    # Compute the encoder input in numpy to get relative biases
+    # Replicate enc_p front-end: emb_phone + emb_pitch, scale, leaky_relu, transpose
+    x = features @ weights["emb_phone.weight"].T  # [B, T, hidden]
+    if "emb_phone.bias" in weights:
+        x = x + weights["emb_phone.bias"]
+
+    # Pitch embedding via indexing
+    pitch_emb = weights["emb_pitch.weight"][pitch]  # [B, T, hidden]
+    x = x + pitch_emb
+    x = x * _math.sqrt(hidden)
+
+    # LeakyReLU(0.1)
+    x = np.where(x > 0, x, 0.1 * x)
+
+    # Transpose to BCT
+    x_bct = x.transpose(0, 2, 1)  # [B, hidden, T]
+
+    mask = np.ones((batch_size, 1, T_val), dtype=np.float32)
+
+    from models._vits_graph import compute_rel_attention_biases
+    biases_k, biases_v = compute_rel_attention_biases(weights, x_bct, mask, config)
+
+    # Build input list
+    inputs = [features, pitch, lengths]
+    n_layers = config["n_layers"]
+    for i in range(n_layers):
+        inputs.append(biases_k[i])
+        inputs.append(biases_v[i])
+
+    return inputs
+
+
+_ENC_P_CONFIG = {
+    "hidden_channels": 192,
+    "filter_channels": 768,
+    "n_heads": 2,
+    "n_layers": 6,
+    "kernel_size": 3,
+    "window_size": 10,
+    "out_channels": 192,
+}
+
+
+class TestEncPGraph:
+    """Tests for the TextEncoder (enc_p) MAX Graph.
+
+    Compiles ONE enc_p graph with random weights and tests all properties.
+    """
+
+    @pytest.fixture(scope="class")
+    def cpu_device(self):
+        from max.driver import CPU
+        return CPU()
+
+    @pytest.fixture(scope="class")
+    def enc_p_model_and_inputs(self, cpu_device):
+        """Build and compile enc_p graph ONCE. Returns (model, inputs, config)."""
+        from max import engine
+        from models._vits_graph import build_enc_p_graph
+
+        rng = np.random.default_rng(42)
+        config = _ENC_P_CONFIG.copy()
+        weights = _make_enc_p_weights(rng, config)
+
+        graph = build_enc_p_graph(weights, config, device="cpu", batch_size=1, max_T=200)
+        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
+
+        # Prepare inputs for T=20
+        rng_input = np.random.default_rng(99)
+        inputs = _prepare_enc_p_inputs(rng_input, weights, config, T_val=20, batch_size=1)
+
+        return model, inputs, config, weights
+
+    @staticmethod
+    def _results_to_numpy(result):
+        """Extract mean, logvar, mask from model result."""
+        if isinstance(result, dict):
+            vals = list(result.values())
+        else:
+            vals = list(result)
+        return tuple(
+            v.to_numpy() if hasattr(v, "to_numpy") else np.array(v) for v in vals
+        )
+
+    def test_enc_p_output_shapes(self, enc_p_model_and_inputs):
+        """Verify mean [1, 192, T], logvar [1, 192, T], mask [1, 1, T]."""
+        model, inputs, config, _ = enc_p_model_and_inputs
+        result = model.execute(*inputs)
+        mean, logvar, mask = self._results_to_numpy(result)
+
+        T_val = 20
+        hidden = config["out_channels"]
+        assert mean.shape == (1, hidden, T_val), f"mean shape: {mean.shape}"
+        assert logvar.shape == (1, hidden, T_val), f"logvar shape: {logvar.shape}"
+        assert mask.shape == (1, 1, T_val), f"mask shape: {mask.shape}"
+
+    def test_enc_p_output_not_nan(self, enc_p_model_and_inputs):
+        """No NaN or Inf in outputs."""
+        model, inputs, config, _ = enc_p_model_and_inputs
+        result = model.execute(*inputs)
+        mean, logvar, mask = self._results_to_numpy(result)
+
+        assert not np.any(np.isnan(mean)), "mean contains NaN"
+        assert not np.any(np.isinf(mean)), "mean contains Inf"
+        assert not np.any(np.isnan(logvar)), "logvar contains NaN"
+        assert not np.any(np.isinf(logvar)), "logvar contains Inf"
+
+    def test_enc_p_mask_applied(self, enc_p_model_and_inputs):
+        """Outputs are zero where mask is zero (partial mask test)."""
+        model, _, config, weights = enc_p_model_and_inputs
+
+        # Create inputs with partial mask (last 5 timesteps masked out)
+        rng = np.random.default_rng(456)
+        T_val = 20
+        valid_len = 15  # only first 15 timesteps are valid
+
+        features = rng.standard_normal((1, T_val, 768)).astype(np.float32) * 0.1
+        pitch = rng.integers(0, 256, (1, T_val)).astype(np.int32)
+        lengths = np.array([valid_len], dtype=np.int32)
+
+        # Compute encoder input for bias computation
+        import math as _math
+        x = features @ weights["emb_phone.weight"].T
+        if "emb_phone.bias" in weights:
+            x = x + weights["emb_phone.bias"]
+        x = x + weights["emb_pitch.weight"][pitch]
+        x = x * _math.sqrt(config["hidden_channels"])
+        x = np.where(x > 0, x, 0.1 * x)
+        x_bct = x.transpose(0, 2, 1)
+
+        mask_np = np.zeros((1, 1, T_val), dtype=np.float32)
+        mask_np[:, :, :valid_len] = 1.0
+
+        from models._vits_graph import compute_rel_attention_biases
+        biases_k, biases_v = compute_rel_attention_biases(weights, x_bct, mask_np, config)
+
+        inputs = [features, pitch, lengths]
+        for i in range(config["n_layers"]):
+            inputs.append(biases_k[i])
+            inputs.append(biases_v[i])
+
+        result = model.execute(*inputs)
+        mean, logvar, mask_out = self._results_to_numpy(result)
+
+        # Mask should be 0 for positions >= valid_len
+        assert np.allclose(mask_out[:, :, valid_len:], 0.0, atol=1e-6), (
+            "Mask should be zero for masked positions"
+        )
+        # Mean and logvar should be zero where mask is zero
+        assert np.allclose(mean[:, :, valid_len:], 0.0, atol=1e-6), (
+            "Mean should be zero where mask is zero"
+        )
+        assert np.allclose(logvar[:, :, valid_len:], 0.0, atol=1e-6), (
+            "Logvar should be zero where mask is zero"
+        )
+
+
+class TestEncPNumericalValidation:
+    """Numerical comparison with PyTorch reference.
+
+    Skipped if checkpoint file is not present.
+    """
+
+    @pytest.fixture(scope="class")
+    def cpu_device(self):
+        from max.driver import CPU
+        return CPU()
+
+    @staticmethod
+    def _results_to_numpy(result):
+        if isinstance(result, dict):
+            vals = list(result.values())
+        else:
+            vals = list(result)
+        return tuple(
+            v.to_numpy() if hasattr(v, "to_numpy") else np.array(v) for v in vals
+        )
+
+    @pytest.mark.skipif(
+        not os.path.exists(CHECKPOINT_PATH),
+        reason=f"Checkpoint not found: {CHECKPOINT_PATH}",
+    )
+    def test_enc_p_matches_pytorch(self, cpu_device):
+        """MAX enc_p output matches PyTorch reference: max diff < 1e-3."""
+        import math as _math
+
+        from max import engine
+        from models._vits_weight_loader import load_vits_weights
+        from models._vits_graph import build_enc_p_graph, compute_rel_attention_biases
+        from _rvc_pytorch_reference import run_enc_p_reference
+
+        import torch
+
+        vits_weights, _, _ = load_vits_weights(CHECKPOINT_PATH)
+
+        config = _ENC_P_CONFIG.copy()
+        T_val = 20
+
+        rng = np.random.default_rng(42)
+        features = rng.standard_normal((1, T_val, 768)).astype(np.float32)
+        pitch = rng.integers(0, 256, (1, T_val)).astype(np.int64)
+
+        # --- PyTorch reference ---
+        m_pt, logs_pt, mask_pt = run_enc_p_reference(
+            CHECKPOINT_PATH, features, pitch, sr_tag="48k"
+        )
+
+        # --- MAX implementation ---
+        hidden = config["hidden_channels"]
+
+        # Replicate front-end to get encoder input for bias computation
+        x = features @ vits_weights["emb_phone.weight"].T
+        if "emb_phone.bias" in vits_weights:
+            x = x + vits_weights["emb_phone.bias"]
+        pitch_i32 = pitch.astype(np.int32)
+        x = x + vits_weights["emb_pitch.weight"][pitch_i32]
+        x = x * _math.sqrt(hidden)
+        x = np.where(x > 0, x, 0.1 * x)
+        x_bct = x.transpose(0, 2, 1)
+
+        mask_np = np.ones((1, 1, T_val), dtype=np.float32)
+        biases_k, biases_v = compute_rel_attention_biases(
+            vits_weights, x_bct, mask_np, config
+        )
+
+        graph = build_enc_p_graph(
+            vits_weights, config, device="cpu", batch_size=1, max_T=200
+        )
+        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
+
+        lengths = np.array([T_val], dtype=np.int32)
+        inputs = [features, pitch_i32, lengths]
+        for i in range(config["n_layers"]):
+            inputs.append(biases_k[i])
+            inputs.append(biases_v[i])
+
+        result = model.execute(*inputs)
+        m_max, logs_max, mask_max = self._results_to_numpy(result)
+
+        # --- Comparison ---
+        max_diff_m = np.max(np.abs(m_max - m_pt))
+        max_diff_logs = np.max(np.abs(logs_max - logs_pt))
+        corr_m = np.corrcoef(m_max.flatten(), m_pt.flatten())[0, 1]
+        corr_logs = np.corrcoef(logs_max.flatten(), logs_pt.flatten())[0, 1]
+
+        print(f"\nenc_p numerical validation:")
+        print(f"  m_p max diff:     {max_diff_m:.6f}")
+        print(f"  logs_p max diff:  {max_diff_logs:.6f}")
+        print(f"  m_p correlation:  {corr_m:.6f}")
+        print(f"  logs_p correlation: {corr_logs:.6f}")
+
+        assert max_diff_m < 1e-3, f"Mean max diff {max_diff_m} exceeds tolerance 1e-3"
+        assert max_diff_logs < 1e-3, f"LogVar max diff {max_diff_logs} exceeds tolerance 1e-3"
+        assert corr_m > 0.999, f"Mean correlation {corr_m} below 0.999"
+        assert corr_logs > 0.999, f"LogVar correlation {corr_logs} below 0.999"
