@@ -510,3 +510,278 @@ class TestVITSWeightLoaderRealCheckpoint:
         assert "sr" in config
         assert "upsample_rates" in config
         assert "upsample_initial_channel" in config
+
+
+# ======================================================================
+# Flow graph tests (Task 3)
+# ======================================================================
+
+
+def _make_wavenet_weights(rng, hidden=192, kernel_size=5, n_layers=3, gin_channels=256):
+    """Generate random WaveNet weights matching RVC v2 config.
+
+    Returns dict with keys: cond_layer.weight, cond_layer.bias,
+    in_layers.{i}.weight/bias, res_skip_layers.{i}.weight/bias.
+    """
+    w = {}
+    # cond_layer: Conv1d(256, 2*192*3=1152, k=1)
+    w["cond_layer.weight"] = rng.standard_normal(
+        (2 * hidden * n_layers, gin_channels, 1)
+    ).astype(np.float32) * 0.01
+    w["cond_layer.bias"] = np.zeros(2 * hidden * n_layers, dtype=np.float32)
+
+    for i in range(n_layers):
+        # in_layers[i]: Conv1d(192, 384, k=5, dilation=dilation_rate**i)
+        w[f"in_layers.{i}.weight"] = rng.standard_normal(
+            (2 * hidden, hidden, kernel_size)
+        ).astype(np.float32) * 0.01
+        w[f"in_layers.{i}.bias"] = np.zeros(2 * hidden, dtype=np.float32)
+
+        # res_skip_layers[i]: Conv1d(192, 384, k=1) for i<n-1, Conv1d(192, 192, k=1) for i==n-1
+        if i < n_layers - 1:
+            out_ch = 2 * hidden
+        else:
+            out_ch = hidden
+        w[f"res_skip_layers.{i}.weight"] = rng.standard_normal(
+            (out_ch, hidden, 1)
+        ).astype(np.float32) * 0.01
+        w[f"res_skip_layers.{i}.bias"] = np.zeros(out_ch, dtype=np.float32)
+
+    return w
+
+
+def _make_coupling_layer_weights(rng, hidden=192, kernel_size=5, n_layers=3, gin_channels=256):
+    """Generate random ResidualCouplingLayer weights.
+
+    Returns dict with keys: pre.weight, pre.bias, post.weight, post.bias,
+    enc.cond_layer.weight, enc.in_layers.{i}.weight, etc.
+    """
+    half_ch = hidden // 2  # 96
+    w = {}
+
+    # pre: Conv1d(96, 192, k=1)
+    w["pre.weight"] = rng.standard_normal((hidden, half_ch, 1)).astype(np.float32) * 0.01
+    w["pre.bias"] = np.zeros(hidden, dtype=np.float32)
+
+    # post: Conv1d(192, 96, k=1) — initialized to zero in PyTorch
+    w["post.weight"] = np.zeros((half_ch, hidden, 1), dtype=np.float32)
+    w["post.bias"] = np.zeros(half_ch, dtype=np.float32)
+
+    # enc (WaveNet) weights
+    enc_w = _make_wavenet_weights(rng, hidden, kernel_size, n_layers, gin_channels)
+    for k, v in enc_w.items():
+        w[f"enc.{k}"] = v
+
+    return w
+
+
+def _make_full_flow_weights(rng, n_flows=4, hidden=192, kernel_size=5, n_layers=3, gin_channels=256):
+    """Generate random weights for the full flow (4 coupling layers).
+
+    Returns dict with keys like "flows.0.pre.weight", etc.
+    Coupling layers at indices 0, 2, 4, 6.
+    """
+    w = {}
+    for f in range(n_flows):
+        flow_idx = f * 2  # 0, 2, 4, 6
+        coupling_w = _make_coupling_layer_weights(rng, hidden, kernel_size, n_layers, gin_channels)
+        for k, v in coupling_w.items():
+            w[f"flows.{flow_idx}.{k}"] = v
+    return w
+
+
+class TestFlowGraph:
+    """Tests for the full flow graph (WaveNet + coupling layers + flip).
+
+    Compiles ONE full flow graph and tests all properties from it.
+    This avoids multiple graph compilations which exhaust memory.
+    """
+
+    @pytest.fixture(scope="class")
+    def cpu_device(self):
+        from max.driver import CPU
+        return CPU()
+
+    @pytest.fixture(scope="class")
+    def flow_model(self, cpu_device):
+        """Build and compile ONE full flow graph with random weights. Shared by all tests."""
+        from max import engine
+        from models._vits_graph import build_flow_graph
+
+        rng = np.random.default_rng(42)
+        hidden = 192
+
+        # Use non-zero post weights so coupling actually transforms
+        weights = _make_full_flow_weights(rng, n_flows=4, hidden=hidden)
+        for f in range(4):
+            flow_idx = f * 2
+            weights[f"flows.{flow_idx}.post.weight"] = rng.standard_normal(
+                (hidden // 2, hidden, 1)
+            ).astype(np.float32) * 0.01
+            weights[f"flows.{flow_idx}.post.bias"] = rng.standard_normal(
+                hidden // 2
+            ).astype(np.float32) * 0.01
+
+        g_np = rng.standard_normal((256, 1)).astype(np.float32) * 0.1
+
+        config = {
+            "inter_channels": hidden,
+            "hidden_channels": hidden,
+            "n_layers": 3,
+            "dilation_rate": 1,
+            "n_flows": 4,
+        }
+
+        graph = build_flow_graph(weights, g_np, config, device="cpu", batch_size=1)
+        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
+        return model
+
+    @staticmethod
+    def _result_to_numpy(result):
+        v = list(result.values())[0] if isinstance(result, dict) else result[0]
+        return v.to_numpy() if hasattr(v, "to_numpy") else np.array(v)
+
+    def test_flow_output_shape(self, flow_model):
+        """Full flow reverse: z_p [1, 192, T] + mask -> z [1, 192, T]."""
+        rng = np.random.default_rng(99)
+        hidden = 192
+        T_val = 20
+
+        z_p = rng.standard_normal((1, hidden, T_val)).astype(np.float32) * 0.1
+        mask = np.ones((1, 1, T_val), dtype=np.float32)
+
+        result = flow_model.execute(z_p, mask)
+        out_np = self._result_to_numpy(result)
+
+        assert out_np.shape == (1, hidden, T_val), (
+            f"Expected (1, {hidden}, {T_val}), got {out_np.shape}"
+        )
+
+    def test_flow_output_not_nan(self, flow_model):
+        """Flow output contains no NaN or Inf."""
+        rng = np.random.default_rng(123)
+        hidden = 192
+        T_val = 20
+
+        z_p = rng.standard_normal((1, hidden, T_val)).astype(np.float32) * 0.1
+        mask = np.ones((1, 1, T_val), dtype=np.float32)
+
+        result = flow_model.execute(z_p, mask)
+        out_np = self._result_to_numpy(result)
+
+        assert not np.any(np.isnan(out_np)), "Flow output contains NaN"
+        assert not np.any(np.isinf(out_np)), "Flow output contains Inf"
+
+    def test_flow_output_differs_from_input(self, flow_model):
+        """Full flow reverse output is different from input z_p."""
+        rng = np.random.default_rng(42)
+        hidden = 192
+        T_val = 20
+
+        z_p = rng.standard_normal((1, hidden, T_val)).astype(np.float32) * 0.1
+        mask = np.ones((1, 1, T_val), dtype=np.float32)
+
+        result = flow_model.execute(z_p, mask)
+        out_np = self._result_to_numpy(result)
+
+        assert not np.allclose(out_np, z_p, atol=1e-6), (
+            "Flow output should differ from input"
+        )
+
+    def test_flow_respects_mask(self, flow_model):
+        """Flow output is zero where mask is zero."""
+        rng = np.random.default_rng(456)
+        hidden = 192
+        T_val = 20
+
+        z_p = rng.standard_normal((1, hidden, T_val)).astype(np.float32) * 0.1
+        mask = np.ones((1, 1, T_val), dtype=np.float32)
+        mask[:, :, 15:] = 0.0  # last 5 timesteps masked
+
+        result = flow_model.execute(z_p, mask)
+        out_np = self._result_to_numpy(result)
+
+        assert np.allclose(out_np[:, :, 15:], 0.0, atol=1e-6), (
+            "Flow output should be zero where mask is zero"
+        )
+
+
+class TestFlowNumericalValidation:
+    """Numerical validation against PyTorch reference.
+
+    Compiles ONE flow graph with real checkpoint weights.
+    Skipped if checkpoint file is not present.
+    """
+
+    @pytest.fixture(scope="class")
+    def cpu_device(self):
+        from max.driver import CPU
+        return CPU()
+
+    @staticmethod
+    def _result_to_numpy(result):
+        v = list(result.values())[0] if isinstance(result, dict) else result[0]
+        return v.to_numpy() if hasattr(v, "to_numpy") else np.array(v)
+
+    @pytest.mark.skipif(
+        not os.path.exists(CHECKPOINT_PATH),
+        reason=f"Checkpoint not found: {CHECKPOINT_PATH}",
+    )
+    def test_flow_matches_pytorch(self, cpu_device):
+        """MAX flow output matches PyTorch reference: max diff < 1e-3, correlation > 0.999."""
+        from max import engine
+        from models._vits_weight_loader import load_vits_weights, extract_speaker_embedding
+        from models._vits_graph import build_flow_graph
+        from _rvc_pytorch_reference import run_flow_reference
+
+        import torch
+
+        # Load checkpoint
+        ckpt = torch.load(CHECKPOINT_PATH, map_location="cpu", weights_only=False)
+        sd = ckpt["weight"]
+
+        vits_weights, _, config = load_vits_weights(CHECKPOINT_PATH)
+        g_np = extract_speaker_embedding(sd, sid=0)  # [256, 1]
+
+        hidden = 192
+        T_val = 20
+
+        # Fixed z_p and mask
+        rng = np.random.default_rng(42)
+        z_p = rng.standard_normal((1, hidden, T_val)).astype(np.float32) * 0.1
+        mask = np.ones((1, 1, T_val), dtype=np.float32)
+
+        # --- PyTorch reference ---
+        z_pt = run_flow_reference(
+            CHECKPOINT_PATH, z_p, mask, sid=0, sr_tag="48k"
+        )
+
+        # --- MAX implementation ---
+        flow_config = {
+            "inter_channels": hidden,
+            "hidden_channels": hidden,
+            "n_layers": 3,
+            "dilation_rate": 1,
+            "n_flows": 4,
+        }
+
+        graph = build_flow_graph(
+            vits_weights, g_np, flow_config, device="cpu", batch_size=1
+        )
+        model = engine.InferenceSession(devices=[cpu_device]).load(graph)
+
+        result = model.execute(z_p, mask)
+        z_max = self._result_to_numpy(result)
+
+        # --- Comparison ---
+        max_diff = np.max(np.abs(z_max - z_pt))
+        correlation = np.corrcoef(z_max.flatten(), z_pt.flatten())[0, 1]
+
+        print(f"\nFlow numerical validation:")
+        print(f"  Max diff:     {max_diff:.6f}")
+        print(f"  Correlation:  {correlation:.6f}")
+        print(f"  MAX range:    [{z_max.min():.4f}, {z_max.max():.4f}]")
+        print(f"  PT  range:    [{z_pt.min():.4f}, {z_pt.max():.4f}]")
+
+        assert max_diff < 1e-3, f"Max diff {max_diff} exceeds tolerance 1e-3"
+        assert correlation > 0.999, f"Correlation {correlation} below 0.999"
