@@ -17,10 +17,11 @@ import numpy as np
 import pytest
 
 
-CHECKPOINT_PATH = (
-    "/home/maskkiller/Downloads/voice files/extracted/"
-    "theweeknd biggest data set/theweekv1.pth"
-)
+_CHECKPOINT_CANDIDATES = [
+    "/home/maskkiller/Downloads/voice files/extracted/theweeknd biggest data set/theweekv1.pth",
+    "/home/visage/Downloads/voice files/extracted/theweeknd biggest data set/theweekv1.pth",
+]
+CHECKPOINT_PATH = next((p for p in _CHECKPOINT_CANDIDATES if os.path.exists(p)), _CHECKPOINT_CANDIDATES[0])
 
 
 class TestVITSWeightLoader:
