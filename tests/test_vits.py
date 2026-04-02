@@ -1136,3 +1136,145 @@ class TestEncPNumericalValidation:
         assert max_diff_logs < 1e-3, f"LogVar max diff {max_diff_logs} exceeds tolerance 1e-3"
         assert corr_m > 0.999, f"Mean correlation {corr_m} below 0.999"
         assert corr_logs > 0.999, f"LogVar correlation {corr_logs} below 0.999"
+
+
+# ======================================================================
+# Speaker conditioning baking tests (Task 5)
+# ======================================================================
+
+
+class TestSpeakerCondBaking:
+    """Verify bake_hifigan_cond works correctly with real checkpoint data.
+
+    Tests here rely on the real .pth checkpoint; they are skipped when the
+    file is absent.  No HiFiGAN graphs are compiled in this class — only
+    numpy weight arithmetic is verified — so there is zero risk of OOM.
+    """
+
+    @pytest.fixture(scope="class")
+    def checkpoint_state_dict(self):
+        """Load the real checkpoint state dict once for the class."""
+        import torch
+
+        ckpt = torch.load(CHECKPOINT_PATH, map_location="cpu", weights_only=False)
+        sd = ckpt["weight"]
+        return sd
+
+    # ------------------------------------------------------------------
+    # Helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _to_np(t) -> np.ndarray:
+        if hasattr(t, "numpy"):
+            return t.numpy()
+        if hasattr(t, "detach"):
+            return t.detach().numpy()
+        return np.asarray(t)
+
+    # ------------------------------------------------------------------
+    # Test 1: conv_pre.bias changes after baking
+    # ------------------------------------------------------------------
+
+    @pytest.mark.skipif(
+        not os.path.exists(CHECKPOINT_PATH),
+        reason=f"Checkpoint not found: {CHECKPOINT_PATH}",
+    )
+    def test_bias_changed_after_baking(self, checkpoint_state_dict):
+        """conv_pre.bias is different from the original after bake_hifigan_cond."""
+        from models._vits_weight_loader import extract_speaker_embedding, bake_hifigan_cond
+        from models._hifigan_weight_loader import extract_hifigan_weights
+
+        sd = checkpoint_state_dict
+
+        hifigan_weights = extract_hifigan_weights(sd)
+        g = extract_speaker_embedding(sd, sid=0)
+
+        cond_weight = np.asarray(self._to_np(sd["dec.cond.weight"]), dtype=np.float32)
+        cond_bias = np.asarray(self._to_np(sd["dec.cond.bias"]), dtype=np.float32)
+
+        original_bias = hifigan_weights["conv_pre.bias"].copy()
+
+        bake_hifigan_cond(hifigan_weights, g, cond_weight, cond_bias)
+
+        assert not np.allclose(hifigan_weights["conv_pre.bias"], original_bias), (
+            "conv_pre.bias was not modified by bake_hifigan_cond — "
+            "speaker conditioning had no effect"
+        )
+
+    # ------------------------------------------------------------------
+    # Test 2: mathematical correctness of the baked bias
+    # ------------------------------------------------------------------
+
+    @pytest.mark.skipif(
+        not os.path.exists(CHECKPOINT_PATH),
+        reason=f"Checkpoint not found: {CHECKPOINT_PATH}",
+    )
+    def test_baked_bias_is_mathematically_correct(self, checkpoint_state_dict):
+        """new_bias == old_bias + cond_weight[:,:,0] @ g + cond_bias (within float32 tolerance)."""
+        from models._vits_weight_loader import extract_speaker_embedding, bake_hifigan_cond
+        from models._hifigan_weight_loader import extract_hifigan_weights
+
+        sd = checkpoint_state_dict
+
+        hifigan_weights = extract_hifigan_weights(sd)
+        g = extract_speaker_embedding(sd, sid=0)  # [256, 1]
+
+        cond_weight = np.asarray(self._to_np(sd["dec.cond.weight"]), dtype=np.float32)  # [C, 256, 1]
+        cond_bias = np.asarray(self._to_np(sd["dec.cond.bias"]), dtype=np.float32)      # [C]
+
+        original_bias = hifigan_weights["conv_pre.bias"].copy()  # [C]
+
+        bake_hifigan_cond(hifigan_weights, g, cond_weight, cond_bias)
+
+        # Expected: old_bias + cond_weight[:, :, 0] @ g.squeeze(-1) + cond_bias
+        # cond_weight[:, :, 0]: [C, 256]   g: [256, 1]  -> matmul -> [C, 1] -> squeeze -> [C]
+        cond_out = (cond_weight[:, :, 0] @ g).squeeze(-1) + cond_bias  # [C]
+        expected = original_bias + cond_out
+
+        np.testing.assert_allclose(
+            hifigan_weights["conv_pre.bias"],
+            expected,
+            rtol=1e-5,
+            err_msg="Baked conv_pre.bias does not match expected value",
+        )
+
+    # ------------------------------------------------------------------
+    # Test 3: different speakers produce different baked biases
+    # ------------------------------------------------------------------
+
+    @pytest.mark.skipif(
+        not os.path.exists(CHECKPOINT_PATH),
+        reason=f"Checkpoint not found: {CHECKPOINT_PATH}",
+    )
+    def test_different_speakers_produce_different_biases(self, checkpoint_state_dict):
+        """Baking with sid=0 vs sid=1 yields different conv_pre.bias arrays."""
+        from models._vits_weight_loader import extract_speaker_embedding, bake_hifigan_cond
+        from models._hifigan_weight_loader import extract_hifigan_weights
+
+        sd = checkpoint_state_dict
+
+        # Check the checkpoint has at least 2 speakers
+        emb_weight = self._to_np(sd["emb_g.weight"])
+        if emb_weight.shape[0] < 2:
+            pytest.skip("Checkpoint has only one speaker — cannot compare sid=0 vs sid=1")
+
+        cond_weight = np.asarray(self._to_np(sd["dec.cond.weight"]), dtype=np.float32)
+        cond_bias = np.asarray(self._to_np(sd["dec.cond.bias"]), dtype=np.float32)
+
+        # Bake for sid=0
+        hw0 = extract_hifigan_weights(sd)
+        g0 = extract_speaker_embedding(sd, sid=0)
+        bake_hifigan_cond(hw0, g0, cond_weight, cond_bias)
+        bias0 = hw0["conv_pre.bias"].copy()
+
+        # Bake for sid=1 (fresh hifigan_weights to start from the same original)
+        hw1 = extract_hifigan_weights(sd)
+        g1 = extract_speaker_embedding(sd, sid=1)
+        bake_hifigan_cond(hw1, g1, cond_weight, cond_bias)
+        bias1 = hw1["conv_pre.bias"].copy()
+
+        assert not np.allclose(bias0, bias1), (
+            "Speaker 0 and speaker 1 produced identical conv_pre.bias — "
+            "speaker embeddings may be degenerate"
+        )
