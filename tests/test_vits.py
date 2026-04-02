@@ -1278,3 +1278,273 @@ class TestSpeakerCondBaking:
             "Speaker 0 and speaker 1 produced identical conv_pre.bias — "
             "speaker embeddings may be degenerate"
         )
+
+
+# ======================================================================
+# VoiceConverter orchestration tests (Task 6)
+# ======================================================================
+
+
+class TestVoiceConverter:
+    """Pure-numpy tests for VoiceConverter orchestration helpers.
+
+    These do NOT compile any MAX graphs or load any checkpoints — all
+    tests run on numpy alone and complete instantly.
+    """
+
+    # ------------------------------------------------------------------
+    # Test 1: F0 quantization
+    # ------------------------------------------------------------------
+
+    def test_f0_quantization_zero_is_unvoiced(self):
+        """F0 = 0.0 (unvoiced) always maps to pitch bin 0."""
+        from models.voice_converter import quantize_f0
+
+        f0 = np.array([0.0, 100.0, 200.0, 0.0, 440.0], dtype=np.float32)
+        bins = quantize_f0(f0.copy())
+
+        assert bins[0] == 0, f"Unvoiced frame should be bin 0, got {bins[0]}"
+        assert bins[3] == 0, f"Unvoiced frame should be bin 0, got {bins[3]}"
+
+    def test_f0_quantization_voiced_in_range(self):
+        """Voiced F0 values map to bins in [1, 255]."""
+        from models.voice_converter import quantize_f0
+
+        # Typical voiced range 80-800 Hz
+        f0 = np.linspace(80.0, 800.0, 50).astype(np.float32)
+        bins = quantize_f0(f0.copy())
+
+        assert np.all(bins >= 1), f"All voiced bins should be >= 1, got min {bins.min()}"
+        assert np.all(bins <= 255), f"All bins should be <= 255, got max {bins.max()}"
+
+    def test_f0_quantization_output_dtype(self):
+        """quantize_f0 returns int32 array."""
+        from models.voice_converter import quantize_f0
+
+        f0 = np.array([0.0, 220.0, 440.0, 880.0], dtype=np.float32)
+        bins = quantize_f0(f0)
+
+        assert bins.dtype == np.int32, f"Expected int32, got {bins.dtype}"
+
+    def test_f0_quantization_monotonic(self):
+        """Higher F0 → higher pitch bin (monotonic mapping for voiced frames)."""
+        from models.voice_converter import quantize_f0
+
+        f0 = np.array([100.0, 200.0, 400.0, 800.0], dtype=np.float32)
+        bins = quantize_f0(f0.copy())
+
+        for i in range(len(bins) - 1):
+            assert bins[i] <= bins[i + 1], (
+                f"Non-monotonic: bins[{i}]={bins[i]} > bins[{i+1}]={bins[i+1]}"
+            )
+
+    def test_f0_quantization_440hz_near_midpoint(self):
+        """440 Hz (A4) should map to a mid-range bin (roughly around 120-150)."""
+        from models.voice_converter import quantize_f0
+
+        f0 = np.array([440.0], dtype=np.float32)
+        bins = quantize_f0(f0)
+
+        assert 100 <= bins[0] <= 180, (
+            f"440 Hz should map to mid-range bin, got {bins[0]}"
+        )
+
+    def test_f0_quantization_preserves_shape(self):
+        """quantize_f0 preserves the input array shape."""
+        from models.voice_converter import quantize_f0
+
+        f0_2d = np.random.rand(3, 50).astype(np.float32) * 500.0
+        bins = quantize_f0(f0_2d)
+
+        assert bins.shape == f0_2d.shape, (
+            f"Shape mismatch: {bins.shape} != {f0_2d.shape}"
+        )
+
+    # ------------------------------------------------------------------
+    # Test 2: Feature interpolation (2x nearest-neighbor)
+    # ------------------------------------------------------------------
+
+    def test_feature_interpolation_doubles_time(self):
+        """interpolate_features_2x doubles the time dimension."""
+        from models.voice_converter import interpolate_features_2x
+
+        features = np.random.rand(1, 50, 768).astype(np.float32)
+        up = interpolate_features_2x(features)
+
+        assert up.shape == (1, 100, 768), f"Expected (1, 100, 768), got {up.shape}"
+
+    def test_feature_interpolation_batch(self):
+        """interpolate_features_2x works correctly with batch size > 1."""
+        from models.voice_converter import interpolate_features_2x
+
+        B, T, C = 3, 20, 768
+        features = np.random.rand(B, T, C).astype(np.float32)
+        up = interpolate_features_2x(features)
+
+        assert up.shape == (B, 2 * T, C), f"Expected ({B}, {2*T}, {C}), got {up.shape}"
+
+    def test_feature_interpolation_is_nearest_neighbor(self):
+        """Each frame in input appears exactly twice, consecutively, in output."""
+        from models.voice_converter import interpolate_features_2x
+
+        T, C = 5, 4
+        features = np.arange(T * C, dtype=np.float32).reshape(1, T, C)
+        up = interpolate_features_2x(features)
+
+        for t in range(T):
+            np.testing.assert_array_equal(
+                up[0, 2 * t], features[0, t],
+                err_msg=f"Frame {t}: first copy mismatch",
+            )
+            np.testing.assert_array_equal(
+                up[0, 2 * t + 1], features[0, t],
+                err_msg=f"Frame {t}: second copy mismatch",
+            )
+
+    def test_feature_interpolation_preserves_channel_dim(self):
+        """interpolate_features_2x does not alter the channel dimension."""
+        from models.voice_converter import interpolate_features_2x
+
+        features = np.random.rand(2, 30, 256).astype(np.float32)
+        up = interpolate_features_2x(features)
+
+        assert up.shape[2] == 256, f"Channel dim changed: {up.shape[2]}"
+
+    # ------------------------------------------------------------------
+    # Test 3: Pitch shift
+    # ------------------------------------------------------------------
+
+    def test_pitch_shift_zero_is_identity(self):
+        """apply_pitch_shift with semitones=0 returns unchanged F0."""
+        from models.voice_converter import apply_pitch_shift
+
+        f0 = np.array([0.0, 100.0, 220.0, 440.0], dtype=np.float32)
+        out = apply_pitch_shift(f0, semitones=0)
+
+        np.testing.assert_array_equal(out, f0)
+
+    def test_pitch_shift_12_semitones_doubles_f0(self):
+        """Shifting up 12 semitones (one octave) doubles the voiced F0."""
+        from models.voice_converter import apply_pitch_shift
+
+        f0 = np.array([0.0, 220.0, 440.0], dtype=np.float32)
+        out = apply_pitch_shift(f0, semitones=12)
+
+        np.testing.assert_allclose(out[1], 440.0, rtol=1e-5)
+        np.testing.assert_allclose(out[2], 880.0, rtol=1e-5)
+        assert out[0] == 0.0, "Unvoiced frame should stay 0 after pitch shift"
+
+    def test_pitch_shift_negative_halves_f0(self):
+        """Shifting down 12 semitones halves the voiced F0."""
+        from models.voice_converter import apply_pitch_shift
+
+        f0 = np.array([440.0, 880.0], dtype=np.float32)
+        out = apply_pitch_shift(f0, semitones=-12)
+
+        np.testing.assert_allclose(out[0], 220.0, rtol=1e-5)
+        np.testing.assert_allclose(out[1], 440.0, rtol=1e-5)
+
+    def test_pitch_shift_unvoiced_stays_zero(self):
+        """Unvoiced frames (f0 == 0) remain zero after any pitch shift."""
+        from models.voice_converter import apply_pitch_shift
+
+        f0 = np.array([0.0, 0.0, 440.0, 0.0], dtype=np.float32)
+        for semitones in [-12, -5, 3, 7, 12]:
+            out = apply_pitch_shift(f0, semitones=semitones)
+            assert out[0] == 0.0 and out[1] == 0.0 and out[3] == 0.0, (
+                f"Unvoiced frames changed with semitones={semitones}: {out}"
+            )
+
+    def test_pitch_shift_does_not_modify_input(self):
+        """apply_pitch_shift does not mutate the input array."""
+        from models.voice_converter import apply_pitch_shift
+
+        f0 = np.array([220.0, 440.0, 880.0], dtype=np.float32)
+        original = f0.copy()
+        _ = apply_pitch_shift(f0, semitones=7)
+
+        np.testing.assert_array_equal(f0, original, err_msg="Input was mutated")
+
+    # ------------------------------------------------------------------
+    # Test 4: sequence_mask
+    # ------------------------------------------------------------------
+
+    def test_sequence_mask_shape(self):
+        """sequence_mask returns [B, 1, max_len] float32."""
+        from models.voice_converter import sequence_mask
+
+        lengths = np.array([5, 10, 7], dtype=np.int32)
+        mask = sequence_mask(lengths, max_len=12)
+
+        assert mask.shape == (3, 1, 12), f"Expected (3, 1, 12), got {mask.shape}"
+        assert mask.dtype == np.float32
+
+    def test_sequence_mask_valid_positions(self):
+        """sequence_mask is 1.0 for valid positions and 0.0 beyond length."""
+        from models.voice_converter import sequence_mask
+
+        lengths = np.array([3, 5], dtype=np.int32)
+        mask = sequence_mask(lengths, max_len=8)
+
+        np.testing.assert_array_equal(mask[0, 0, :3], 1.0)
+        np.testing.assert_array_equal(mask[0, 0, 3:], 0.0)
+        np.testing.assert_array_equal(mask[1, 0, :5], 1.0)
+        np.testing.assert_array_equal(mask[1, 0, 5:], 0.0)
+
+    # ------------------------------------------------------------------
+    # Test 5: sample_z_p
+    # ------------------------------------------------------------------
+
+    def test_sample_z_p_shape(self):
+        """sample_z_p returns same shape as mean/logvar."""
+        from models.voice_converter import sample_z_p
+
+        rng = np.random.default_rng(42)
+        mean = rng.standard_normal((1, 192, 20)).astype(np.float32)
+        logvar = rng.standard_normal((1, 192, 20)).astype(np.float32)
+        mask = np.ones((1, 1, 20), dtype=np.float32)
+
+        z = sample_z_p(mean, logvar, mask)
+
+        assert z.shape == mean.shape, f"Expected {mean.shape}, got {z.shape}"
+
+    def test_sample_z_p_masked_to_zero(self):
+        """sample_z_p output is 0.0 where mask is 0.0."""
+        from models.voice_converter import sample_z_p
+
+        rng = np.random.default_rng(7)
+        mean = rng.standard_normal((1, 192, 20)).astype(np.float32)
+        logvar = np.zeros((1, 192, 20), dtype=np.float32)
+        mask = np.ones((1, 1, 20), dtype=np.float32)
+        mask[:, :, 15:] = 0.0
+
+        z = sample_z_p(mean, logvar, mask)
+
+        np.testing.assert_allclose(
+            z[:, :, 15:], 0.0, atol=1e-6,
+            err_msg="Masked positions should be zero",
+        )
+
+    @pytest.mark.slow
+    @pytest.mark.skipif(
+        not os.path.exists(CHECKPOINT_PATH),
+        reason=f"Checkpoint not found: {CHECKPOINT_PATH}",
+    )
+    def test_convert_shape(self):
+        """Full pipeline: VoiceConverter.from_pretrained + convert produces audio."""
+        from models.voice_converter import VoiceConverter
+
+        vc = VoiceConverter.from_pretrained(
+            CHECKPOINT_PATH,
+            hubert_path="facebook/hubert-base-ls960",
+            rmvpe_path="lj1995/VoiceConversionWebUI",
+            device="cpu",
+        )
+
+        # 1 second of silence at 16 kHz
+        audio = np.zeros((1, 16000), dtype=np.float32)
+        out = vc.convert(audio, pitch_shift=0, sr=16000)
+
+        assert out.ndim == 2, f"Expected 2D output, got {out.ndim}D"
+        assert out.shape[0] == 1, f"Expected batch=1, got {out.shape[0]}"
+        assert out.shape[1] > 0, "Output audio should have non-zero length"
