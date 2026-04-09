@@ -360,9 +360,14 @@ def build_unet_graph(
             x,
             [slice(None), slice(0, orig_T), slice(None), slice(None)],
         )
-        # x: [1, T, 128, 3]
+        # x: [1, T, 128, 3] (NHWC)
 
-        # Reshape to [1, T, 384]
+        # Transpose to [1, T, 3, 128] to match PyTorch's flatten order
+        # PyTorch: [1, 3, T, 128] → transpose(1,2) → [1, T, 3, 128] → flatten(-2) → [1, T, 384]
+        # Our NHWC [1, T, 128, 3] → transpose last two dims → [1, T, 3, 128] → reshape → [1, T, 384]
+        x_sq = ops.squeeze(x, 0)          # [T, 128, 3]
+        x_t = ops.transpose(x_sq, 1, 2)   # [T, 3, 128]
+        x = ops.unsqueeze(x_t, 0)         # [1, T, 3, 128]
         x = ops.reshape(x, [1, Dim("T"), 384])
 
         g.output(x)
