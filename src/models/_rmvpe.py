@@ -321,7 +321,7 @@ def build_unet_graph(
             up_b = weights.get(f"dec.{L}.up.b")
             x = _conv_transpose_2x(x, up_w_pt, up_b, device_ref)
 
-            # BN after ConvTranspose
+            # BN + ReLU after ConvTranspose (matches PyTorch ResDecoderBlock.conv1)
             if f"dec.{L}.up.scale" in weights:
                 x = _bn_add(
                     x,
@@ -329,6 +329,7 @@ def build_unet_graph(
                     weights[f"dec.{L}.up.offset"],
                     device_ref,
                 )
+            x = ops.relu(x)
 
             # Skip concat from encoder level (4-L)
             skip = skips[4 - L]
