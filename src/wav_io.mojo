@@ -26,10 +26,10 @@ fn read_wav(path: String) raises -> Tuple[List[Float32], Int]:
 
     var wf = wave_mod.open(path, "rb")
     try:
-        var n_channels = Int(wf.getnchannels())
-        var sample_width = Int(wf.getsampwidth())  # bytes per sample
-        var sample_rate = Int(wf.getframerate())
-        var n_frames = Int(wf.getnframes())
+        var n_channels = Int(py=wf.getnchannels())
+        var sample_width = Int(py=wf.getsampwidth())  # bytes per sample
+        var sample_rate = Int(py=wf.getframerate())
+        var n_frames = Int(py=wf.getnframes())
 
         var raw = wf.readframes(n_frames)
 
@@ -43,8 +43,8 @@ fn read_wav(path: String) raises -> Tuple[List[Float32], Int]:
                 var channel_sum = Float32(0.0)
                 for ch in range(n_channels):
                     var byte_pos = (frame_idx * n_channels + ch) * 2
-                    var b0 = Int(raw[byte_pos])
-                    var b1 = Int(raw[byte_pos + 1])
+                    var b0 = Int(py=raw[byte_pos])
+                    var b1 = Int(py=raw[byte_pos + 1])
                     var raw_val = b0 | (b1 << 8)
                     # Sign extend from 16-bit
                     if raw_val >= 32768:
@@ -61,10 +61,10 @@ fn read_wav(path: String) raises -> Tuple[List[Float32], Int]:
                 var channel_sum = Float32(0.0)
                 for ch in range(n_channels):
                     var byte_pos = (frame_idx * n_channels + ch) * 4
-                    var b0 = Int(raw[byte_pos])
-                    var b1 = Int(raw[byte_pos + 1])
-                    var b2 = Int(raw[byte_pos + 2])
-                    var b3 = Int(raw[byte_pos + 3])
+                    var b0 = Int(py=raw[byte_pos])
+                    var b1 = Int(py=raw[byte_pos + 1])
+                    var b2 = Int(py=raw[byte_pos + 2])
+                    var b3 = Int(py=raw[byte_pos + 3])
                     var raw_val = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
                     if raw_val >= 2147483648:
                         raw_val -= 4294967296

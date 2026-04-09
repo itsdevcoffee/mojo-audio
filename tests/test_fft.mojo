@@ -628,7 +628,7 @@ fn test_radix4_cached_correctness() raises:
         print("  ERROR: Bin 7 magnitude = " + String(mag) + ", expected ~" + String(expected))
         raise Error("Radix-4 cached FFT incorrect")
 
-    print("  ✓ Radix-4 cached FFT correctness validated (bin 7 mag = " + String(mag)[:6] + ")")
+    print("  ✓ Radix-4 cached FFT correctness validated (bin 7 mag = " + String(mag)[byte=:6] + ")")
 
 
 fn test_radix4_cached_vs_original() raises:
@@ -785,7 +785,7 @@ fn test_four_step_vs_original() raises:
         print("  Max error: " + String(max_error) + " at index " + String(max_error_idx))
         raise Error("Four-step FFT differs from original by " + String(max_error))
 
-    print("  ✓ Four-step FFT matches original (max error: " + String(max_error)[:10] + ")")
+    print("  ✓ Four-step FFT matches original (max error: " + String(max_error)[byte=:10] + ")")
 
 
 fn test_four_step_large_n() raises:
@@ -819,7 +819,7 @@ fn test_four_step_large_n() raises:
         print("  Max error: " + String(max_error))
         raise Error("Four-step FFT differs from original on large N")
 
-    print("  ✓ Four-step FFT correct on N=" + String(N) + " (max error: " + String(max_error)[:10] + ")")
+    print("  ✓ Four-step FFT correct on N=" + String(N) + " (max error: " + String(max_error)[byte=:10] + ")")
 
 
 # ==============================================================================
