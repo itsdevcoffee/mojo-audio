@@ -235,11 +235,10 @@ def _conv_transpose_2x(x, w_pt: np.ndarray, b_np, device_ref):
 def _residual_block(x, prefix, weights, device_ref):
     """Single residual block (all convolutions stride=(1,1)).
 
-    Structure:
-        h = conv1 → BN1 → relu
-        h = conv2 → BN2
+    Structure (matches PyTorch ConvBlockRes):
+        h = conv1 → BN1 → relu → conv2 → BN2 → relu
         sc = shortcut(x)  if {prefix}.sc.w exists, else identity
-        output = relu(h + sc)
+        output = h + sc
     """
     w1 = _pt_to_max_conv(weights[f"{prefix}.0.w"])
     b1 = weights.get(f"{prefix}.0.b")
@@ -253,6 +252,7 @@ def _residual_block(x, prefix, weights, device_ref):
     h = _conv2d(h, w2, b2, stride=(1, 1), padding=(1, 1, 1, 1), device_ref=device_ref)
     if f"{prefix}.1.scale" in weights:
         h = _bn_add(h, weights[f"{prefix}.1.scale"], weights[f"{prefix}.1.offset"], device_ref)
+    h = ops.relu(h)
 
     sc_w_key = f"{prefix}.sc.w"
     if sc_w_key in weights:
@@ -262,7 +262,7 @@ def _residual_block(x, prefix, weights, device_ref):
     else:
         sc = x
 
-    return ops.relu(ops.add(h, sc))
+    return ops.add(h, sc)
 
 
 def build_unet_graph(
