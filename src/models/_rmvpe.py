@@ -407,7 +407,8 @@ def bigru_forward(x: np.ndarray, weights: dict, hidden_size: int = 256) -> np.nd
         r = _sigmoid(gi[:, :H]    + gh[:, :H])       # reset gate  [B, H]
         z = _sigmoid(gi[:, H:2*H] + gh[:, H:2*H])    # update gate [B, H]
         n = np.tanh(gi[:, 2*H:]   + r * gh[:, 2*H:]) # new gate    [B, H]
-        return ((1.0 - z) * h + z * n).astype(np.float32)
+        # PyTorch: h_t = (1-z)*n + z*h  (z=1 keeps old state, z=0 takes new)
+        return ((1.0 - z) * n + z * h).astype(np.float32)
 
     B, T, _ = x.shape
     w = weights
