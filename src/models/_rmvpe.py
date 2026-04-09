@@ -401,10 +401,11 @@ def bigru_forward(x: np.ndarray, weights: dict, hidden_size: int = 256) -> np.nd
 
     def _gru_step(x_t, h, w_ih, w_hh, b_ih, b_hh):
         # x_t: [B, input_size], h: [B, H]
+        # PyTorch GRU weight layout: [reset, update, new] (r, z, n)
         gi = x_t @ w_ih.T + b_ih  # [B, 3H]
         gh = h @ w_hh.T + b_hh    # [B, 3H]
-        z = _sigmoid(gi[:, :H]    + gh[:, :H])       # update gate [B, H]
-        r = _sigmoid(gi[:, H:2*H] + gh[:, H:2*H])    # reset gate  [B, H]
+        r = _sigmoid(gi[:, :H]    + gh[:, :H])       # reset gate  [B, H]
+        z = _sigmoid(gi[:, H:2*H] + gh[:, H:2*H])    # update gate [B, H]
         n = np.tanh(gi[:, 2*H:]   + r * gh[:, 2*H:]) # new gate    [B, H]
         return ((1.0 - z) * h + z * n).astype(np.float32)
 
