@@ -452,16 +452,17 @@ def linear_output(x: np.ndarray, weights: dict) -> np.ndarray:
 
 
 # RMVPE pitch bins: 360 bins, 20-cent resolution
-# Bin i -> frequency = 440 * 2^((i * 20 - 6900) / 1200) Hz
-# Bin 0 ~= 32.7 Hz (C1), bin 359 ~= 1975.5 Hz (B6)
+# Matches Applio mapping: cents = bin * 20 + 1997.3794084376191
+# Hz = 10 * 2^(cents / 1200)
+# Bin 0 ~= 31.7 Hz, bin 359 ~= 1975.5 Hz
 _CENTS_PER_BIN = 20.0
-_CENTER_CENTS = 6900.0
+_CENTS_OFFSET = 1997.3794084376191
 
 
 def _bins_to_hz(bin_indices: np.ndarray) -> np.ndarray:
     """Convert RMVPE bin indices (float, for sub-bin accuracy) to Hz."""
-    cents = bin_indices.astype(np.float32) * _CENTS_PER_BIN - _CENTER_CENTS
-    return (440.0 * (2.0 ** (cents / 1200.0))).astype(np.float32)
+    cents = bin_indices.astype(np.float64) * _CENTS_PER_BIN + _CENTS_OFFSET
+    return (10.0 * (2.0 ** (cents / 1200.0))).astype(np.float32)
 
 
 def salience_to_hz(salience: np.ndarray, threshold: float = 0.03) -> np.ndarray:
