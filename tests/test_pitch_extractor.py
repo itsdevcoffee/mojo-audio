@@ -539,9 +539,10 @@ class TestPitchExtractorCorrectness:
         result = max_model._unet_model.execute(mel_nhwc)
         unet_out = (list(result.values())[0] if isinstance(result, dict) else result[0]).to_numpy()
 
-        # BiGRU + linear
+        # BiGRU + linear → raw logits, apply sigmoid to match PyTorch E2E output
         gru_out = bigru_forward(unet_out, max_model._weights)
-        max_hidden = linear_output(gru_out, max_model._weights)  # [1, 64, 360]
+        max_logits = linear_output(gru_out, max_model._weights)  # [1, 64, 360]
+        max_hidden = 1.0 / (1.0 + np.exp(-max_logits))  # sigmoid
 
         # --- Compare ---
         max_diff = np.abs(max_hidden - pt_hidden).max()
