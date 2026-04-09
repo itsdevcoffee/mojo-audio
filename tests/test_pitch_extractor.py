@@ -488,28 +488,72 @@ class TestPitchExtractorShapes:
 
 @pytest.mark.slow
 class TestPitchExtractorCorrectness:
-    """Integration test: compare vs Applio RMVPE on 440 Hz sine wave.
+    """Integration test: compare MAX RMVPE output against PyTorch reference.
 
     Requires rmvpe.pt download (~181MB). Run with: pixi run test-pitch-extractor-full
     """
 
-    def test_f0_on_sine_440hz(self):
-        """440 Hz sine wave → F0 within ±5 cents of 440 Hz on voiced frames."""
+    def test_salience_matches_pytorch(self):
+        """MAX RMVPE salience output matches PyTorch E2E on same mel input."""
+        import sys
         import numpy as np
-        from models import PitchExtractor
+        import torch
 
-        t = np.linspace(0, 1, 16000, endpoint=False, dtype=np.float32)
-        audio = (0.5 * np.sin(2 * np.pi * 440 * t)).reshape(1, -1)
+        # --- PyTorch reference ---
+        applio_paths = ["/home/visage/repos/Applio", "/home/maskkiller/repos/Applio"]
+        applio = next((p for p in applio_paths if __import__("os").path.isdir(p)), None)
+        assert applio is not None, "Applio not found — needed for PyTorch RMVPE reference"
+        if applio not in sys.path:
+            sys.path.insert(0, applio)
 
-        model = PitchExtractor.from_pretrained()
-        f0 = model.extract(audio)
+        from rvc.lib.predictors.RMVPE import E2E
 
-        voiced = f0[f0 > 0]
-        assert len(voiced) > 50, f"Too few voiced frames: {len(voiced)}"
+        rmvpe_paths = [
+            f"{applio}/rvc/models/predictors/rmvpe.pt",
+            f"{applio}/rvc/models/pretraineds/rmvpe.pt",
+        ]
+        rmvpe_pt = next((p for p in rmvpe_paths if __import__("os").path.exists(p)), None)
+        assert rmvpe_pt is not None, "rmvpe.pt not found in Applio"
 
-        cents = 1200 * np.log2(voiced / 440.0)
-        mean_err = np.abs(cents).mean()
-        print(f"\n  Voiced frames: {len(voiced)}/{len(f0)}")
-        print(f"  Mean cent error: {mean_err:.2f}")
-        print(f"  Max cent error: {np.abs(cents).max():.2f}")
-        assert mean_err < 5.0, f"Mean cent error {mean_err:.2f} > 5 cents"
+        pt_model = E2E(4, 1, (2, 2))
+        pt_model.load_state_dict(torch.load(rmvpe_pt, map_location="cpu", weights_only=True))
+        pt_model.eval()
+
+        # Create deterministic mel input [1, 128, 64] (64 frames, must be multiple of 32)
+        rng = np.random.RandomState(42)
+        mel_np = rng.randn(1, 128, 64).astype(np.float32)
+
+        with torch.no_grad():
+            pt_hidden = pt_model(torch.from_numpy(mel_np)).numpy()  # [1, 64, 360]
+
+        # --- MAX pipeline ---
+        from models.pitch_extractor import PitchExtractor
+        from models._rmvpe import bigru_forward, linear_output
+
+        max_model = PitchExtractor.from_pretrained()
+
+        # Run U-Net: expects NHWC [1, T, 128, 1]
+        mel_nhwc = mel_np.transpose(0, 2, 1)[:, :, :, np.newaxis]  # [1, 64, 128, 1]
+        mel_nhwc = np.ascontiguousarray(mel_nhwc)
+
+        result = max_model._unet_model.execute(mel_nhwc)
+        unet_out = (list(result.values())[0] if isinstance(result, dict) else result[0]).to_numpy()
+
+        # BiGRU + linear
+        gru_out = bigru_forward(unet_out, max_model._weights)
+        max_hidden = linear_output(gru_out, max_model._weights)  # [1, 64, 360]
+
+        # --- Compare ---
+        max_diff = np.abs(max_hidden - pt_hidden).max()
+        mean_diff = np.abs(max_hidden - pt_hidden).mean()
+        correlation = np.corrcoef(max_hidden.flatten(), pt_hidden.flatten())[0, 1]
+
+        print(f"\n  PitchExtractor numerical validation:")
+        print(f"  Max diff:     {max_diff:.6f}")
+        print(f"  Mean diff:    {mean_diff:.6f}")
+        print(f"  Correlation:  {correlation:.6f}")
+        print(f"  MAX range:    [{max_hidden.min():.4f}, {max_hidden.max():.4f}]")
+        print(f"  PT  range:    [{pt_hidden.min():.4f}, {pt_hidden.max():.4f}]")
+
+        assert max_diff < 0.01, f"Max diff {max_diff} >= 0.01"
+        assert correlation > 0.99, f"Correlation {correlation} < 0.99"
