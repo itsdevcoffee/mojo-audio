@@ -96,25 +96,76 @@ def _bn_add(x, scale: np.ndarray, offset: np.ndarray, device_ref):
 
 
 def _conv2d(x, w_np: np.ndarray, b_np, stride, padding, device_ref):
-    """ops.conv2d wrapper; w_np must already be in MAX [kH, kW, C_in, C_out] format.
+    """Conv2d via im2col + matmul, avoiding ops.conv2d (broken for C_in >= 8).
 
-    For 1×1 convolutions, falls back to matmul because ops.conv2d with kernel=1
-    fails in this MAX version (missing layout_transform_RSCF_to_KNkni kernel).
+    w_np must already be in MAX [kH, kW, C_in, C_out] format.
+    Supports stride=(1,1) only (all RMVPE convolutions use stride 1).
+
+    For 1×1 convolutions, uses direct matmul (no im2col needed).
+    For k×k convolutions, extracts shifted patches along H and W axes,
+    concatenates into a column matrix, and multiplies by reshaped weight.
+
+    This replaces the previous ops.conv2d implementation which produces
+    incorrect results when C_in >= 8 (modular/modular#6248).
     """
     kH, kW = w_np.shape[0], w_np.shape[1]
+    C_in = w_np.shape[2]
+    C_out = w_np.shape[3]
+
     if kH == 1 and kW == 1:
-        C_in = w_np.shape[2]
-        C_out = w_np.shape[3]
         w_2d = ops.constant(w_np.reshape(C_in, C_out), device=device_ref)
-        # Squeeze the batch=1 dim, do batched matmul [H, W, C_in] × [C_in, C_out],
-        # then unsqueeze batch back.  This avoids reshape(-1, C_in) which requires
-        # MAX to symbolically verify H*W*1 == H*W — which it can't always do.
         x_sq = ops.squeeze(x, 0)        # [H, W, C_in]
-        out = ops.matmul(x_sq, w_2d)    # [H, W, C_out] via broadcasting
+        out = ops.matmul(x_sq, w_2d)    # [H, W, C_out]
         out = ops.unsqueeze(out, 0)     # [1, H, W, C_out]
     else:
-        w = ops.constant(w_np, device=device_ref)
-        out = ops.conv2d(x, w, stride=stride, padding=padding)
+        # im2col + matmul for k×k conv with stride 1
+        assert stride == (1, 1), f"im2col conv2d only supports stride=1, got {stride}"
+
+        orig_H = x.shape[1]
+        orig_W = x.shape[2]
+
+        # Pad input: padding is (H_bef, H_aft, W_bef, W_aft)
+        pad_h_bef, pad_h_aft, pad_w_bef, pad_w_aft = padding
+        if any(p > 0 for p in padding):
+            x_pad = ops.pad(x, [
+                0, 0,                          # batch
+                pad_h_bef, pad_h_aft,          # H
+                pad_w_bef, pad_w_aft,          # W
+                0, 0,                          # C
+            ])
+        else:
+            x_pad = x
+
+        # im2col: for each (kh, kw), slice a [1, H, W, C_in] patch and concat
+        # along channel axis → [1, H, W, kH*kW*C_in]
+        slices = []
+        for kh in range(kH):
+            for kw in range(kW):
+                s = ops.slice_tensor(x_pad, [
+                    slice(None),
+                    slice(kh, kh + orig_H),
+                    slice(kw, kw + orig_W),
+                    slice(None),
+                ])
+                slices.append(s)
+
+        x_cols = ops.concat(slices, axis=3) if len(slices) > 1 else slices[0]
+        # x_cols: [1, H, W, kH*kW*C_in]
+
+        # Reshape weight: [kH, kW, C_in, C_out] → [kH*kW*C_in, C_out]
+        w_mat = w_np.reshape(kH * kW * C_in, C_out).astype(np.float32)
+        w_const = ops.constant(w_mat, device=device_ref)
+
+        # matmul: [1, H, W, kH*kW*C_in] × [kH*kW*C_in, C_out] → [1, H, W, C_out]
+        out = ops.matmul(x_cols, w_const)
+
+        # Rebind to reconcile symbolic dims after slicing
+        out = ops.rebind(
+            out,
+            [x.shape[0], x.shape[1], x.shape[2], C_out],
+            message="conv2d im2col: reconcile H,W dims",
+        )
+
     if b_np is not None:
         b = ops.constant(b_np.reshape(1, 1, 1, -1), device=device_ref)
         out = ops.add(out, b)
