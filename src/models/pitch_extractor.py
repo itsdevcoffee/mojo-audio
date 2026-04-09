@@ -15,15 +15,17 @@ _MEL_N_FFT = 1024
 _MEL_WIN = 1024
 _MEL_HOP = 160
 _MEL_N_MELS = 128
-_MEL_FMIN = 50.0
-_MEL_FMAX = 2006.0
+_MEL_FMIN = 30
+_MEL_FMAX = 8000
+_MEL_CLAMP = 1e-5
 
 
 def _mel_spectrogram(audio: np.ndarray) -> np.ndarray:
-    """Compute log mel spectrogram matching RMVPE training preprocessing.
+    """Compute log mel spectrogram matching Applio's RMVPE MelSpectrogram.
 
-    Matches torchaudio MelSpectrogram with norm="slaney", mel_scale="slaney",
-    center=True, hann window — implemented via librosa for portability.
+    Replicates Applio's exact pipeline: STFT → magnitude → mel filterbank → log.
+    Uses HTK mel scale, fmin=30, fmax=8000, no normalization, clamp=1e-5,
+    reflect padding (matching torch.stft center=True).
 
     Args:
         audio: [1, N] float32 @16kHz.
@@ -32,27 +34,22 @@ def _mel_spectrogram(audio: np.ndarray) -> np.ndarray:
         [1, 1, T, 128] float32 (batch=1, channel=1, time, mel_bins).
     """
     import librosa
+    from librosa.filters import mel as librosa_mel_basis
 
-    # audio: [1, N] → [N]
     y = audio[0]
 
-    # librosa mel_spectrogram with center=True (default) matches torchaudio center=True
-    mel = librosa.feature.melspectrogram(
-        y=y,
-        sr=_MEL_SR,
-        n_fft=_MEL_N_FFT,
-        win_length=_MEL_WIN,
-        hop_length=_MEL_HOP,
-        n_mels=_MEL_N_MELS,
-        fmin=_MEL_FMIN,
-        fmax=_MEL_FMAX,
-        window="hann",
-        center=True,
-        norm="slaney",
-        htk=False,  # htk=False → slaney mel scale
+    S = librosa.stft(
+        y, n_fft=_MEL_N_FFT, hop_length=_MEL_HOP, win_length=_MEL_WIN,
+        window="hann", center=True, pad_mode="reflect",
     )
-    # mel: [n_mels, T]
-    log_mel = np.log(mel + 1e-8)
+    magnitude = np.abs(S)  # [n_fft/2+1, T]
+
+    mel_basis = librosa_mel_basis(
+        sr=_MEL_SR, n_fft=_MEL_N_FFT, n_mels=_MEL_N_MELS,
+        fmin=_MEL_FMIN, fmax=_MEL_FMAX, htk=True,
+    )
+    mel = mel_basis @ magnitude  # [n_mels, T]
+    log_mel = np.log(np.maximum(mel, _MEL_CLAMP))
 
     # [n_mels, T] → [1, 1, T, n_mels]
     log_mel = log_mel.T[np.newaxis, np.newaxis, :, :]

@@ -430,6 +430,46 @@ class TestMelSpectrogram:
         mel = _mel_spectrogram(audio)
         assert 195 <= mel.shape[2] <= 205, f"Unexpected T: {mel.shape[2]}"
 
+    @pytest.mark.slow
+    def test_mel_matches_applio(self):
+        """Our mel spectrogram matches Applio's MelSpectrogram on same audio."""
+        import sys
+        import torch
+
+        applio_paths = ["/home/visage/repos/Applio", "/home/maskkiller/repos/Applio"]
+        applio = next((p for p in applio_paths if __import__("os").path.isdir(p)), None)
+        assert applio is not None, "Applio not found"
+        if applio not in sys.path:
+            sys.path.insert(0, applio)
+
+        from rvc.lib.predictors.RMVPE import MelSpectrogram as ApplioMel
+        from models.pitch_extractor import _mel_spectrogram
+
+        # Deterministic audio
+        rng = np.random.default_rng(42)
+        audio_np = rng.standard_normal((1, 16000)).astype(np.float32) * 0.1
+
+        # Applio mel: [1, 128, T]
+        applio_mel = ApplioMel(128, 16000, 1024, 160, None, 30, 8000)
+        with torch.no_grad():
+            pt_mel = applio_mel(torch.from_numpy(audio_np)).numpy()  # [1, 128, T]
+
+        # Ours: [1, 1, T, 128] → [1, 128, T]
+        our_mel = _mel_spectrogram(audio_np)
+        our_mel = our_mel[0, 0].T[np.newaxis]  # [1, 128, T]
+
+        max_diff = np.abs(our_mel - pt_mel).max()
+        correlation = np.corrcoef(our_mel.flatten(), pt_mel.flatten())[0, 1]
+
+        print(f"\n  Mel spectrogram comparison:")
+        print(f"  Max diff:    {max_diff:.6f}")
+        print(f"  Correlation: {correlation:.6f}")
+        print(f"  Ours range:  [{our_mel.min():.4f}, {our_mel.max():.4f}]")
+        print(f"  PT range:    [{pt_mel.min():.4f}, {pt_mel.max():.4f}]")
+
+        assert correlation > 0.999, f"Correlation {correlation} < 0.999"
+        assert max_diff < 0.1, f"Max diff {max_diff} >= 0.1"
+
 
 class TestPitchExtractorShapes:
     """PitchExtractor with random weights — no download required."""
