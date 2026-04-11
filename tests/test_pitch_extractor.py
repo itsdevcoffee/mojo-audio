@@ -192,8 +192,8 @@ class TestUNetGraph:
         model = engine.InferenceSession(devices=[CPU()]).load(graph)
         assert model is not None
 
-    def test_output_shape_t100(self):
-        """Mel [1, T=100, 128, 1] → [1, 100, 384]."""
+    def test_output_shape_t96(self):
+        """Mel [1, T=96, 128, 1] → [1, 96, 384]. T must be multiple of 32."""
         import numpy as np
         from max import engine
         from max.driver import CPU
@@ -204,13 +204,13 @@ class TestUNetGraph:
         model = engine.InferenceSession(devices=[CPU()]).load(
             build_unet_graph(weights, DeviceRef.CPU())
         )
-        mel = np.random.randn(1, 100, 128, 1).astype(np.float32) * 0.1
+        mel = np.random.randn(1, 96, 128, 1).astype(np.float32) * 0.1
         result = model.execute(mel)
         out = (list(result.values())[0] if isinstance(result, dict) else result[0]).to_numpy()
-        assert out.shape == (1, 100, 384), f"Expected (1,100,384) got {out.shape}"
+        assert out.shape == (1, 96, 384), f"Expected (1,96,384) got {out.shape}"
 
-    def test_output_shape_t200(self):
-        """Dynamic T: [1, 200, 128, 1] → [1, 200, 384]."""
+    def test_output_shape_t192(self):
+        """Dynamic T: [1, 192, 128, 1] → [1, 192, 384]. T must be multiple of 32."""
         import numpy as np
         from max import engine
         from max.driver import CPU
@@ -221,10 +221,10 @@ class TestUNetGraph:
         model = engine.InferenceSession(devices=[CPU()]).load(
             build_unet_graph(weights, DeviceRef.CPU())
         )
-        mel = np.random.randn(1, 200, 128, 1).astype(np.float32) * 0.1
+        mel = np.random.randn(1, 192, 128, 1).astype(np.float32) * 0.1
         result = model.execute(mel)
         out = (list(result.values())[0] if isinstance(result, dict) else result[0]).to_numpy()
-        assert out.shape == (1, 200, 384), f"Expected (1,200,384) got {out.shape}"
+        assert out.shape == (1, 192, 384), f"Expected (1,192,384) got {out.shape}"
 
     def test_output_not_nan(self):
         """U-Net output must not contain NaN or Inf."""
@@ -238,7 +238,7 @@ class TestUNetGraph:
         model = engine.InferenceSession(devices=[CPU()]).load(
             build_unet_graph(weights, DeviceRef.CPU())
         )
-        mel = np.random.randn(1, 100, 128, 1).astype(np.float32) * 0.1
+        mel = np.random.randn(1, 96, 128, 1).astype(np.float32) * 0.1
         result = model.execute(mel)
         out = (list(result.values())[0] if isinstance(result, dict) else result[0]).to_numpy()
         assert not np.isnan(out).any(), "Output contains NaN"
@@ -533,12 +533,6 @@ class TestPitchExtractorCorrectness:
     Requires rmvpe.pt download (~181MB). Run with: pixi run test-pitch-extractor-full
     """
 
-    @pytest.mark.xfail(
-        reason="MAX U-Net output diverges from PyTorch — salience peaks at wrong bins, "
-               "causing wrong F0 (e.g. 39 Hz vs 219 Hz on real voice). "
-               "Likely baked batch-norm or im2col accumulation error in deep U-Net. "
-               "Priority bug to investigate."
-    )
     def test_salience_matches_pytorch(self):
         """MAX RMVPE salience output matches PyTorch E2E on same mel input."""
         import sys
@@ -576,7 +570,11 @@ class TestPitchExtractorCorrectness:
         from models.pitch_extractor import PitchExtractor
         from models._rmvpe import bigru_forward, linear_output
 
-        max_model = PitchExtractor.from_pretrained()
+        # Force CPU: MAX GPU path has a pre-existing KGEN compile issue on the
+        # RMVPE graph that's unrelated to correctness. All other tests in this
+        # suite also pin device="cpu" for the same reason. See the 04-11 audit
+        # for details.
+        max_model = PitchExtractor.from_pretrained(device="cpu")
 
         # Run U-Net: expects NHWC [1, T, 128, 1]
         mel_nhwc = mel_np.transpose(0, 2, 1)[:, :, :, np.newaxis]  # [1, 64, 128, 1]

@@ -7,20 +7,30 @@ Architecture:
   Input:  [1, T, 128, 1] NHWC float32 (mel spectrogram, time=H, freq=W)
   Output: [1, T, 384] float32 (pre-BiGRU features)
 
+**Precondition: T must be a multiple of 32.** The encoder pools 5 times
+(halving T each time) and the decoder upsamples 5 times (doubling T each
+time); only multiples of 32 round-trip cleanly. Callers that have a
+non-divisible T must reflect-pad to the next multiple of 32 before calling
+the graph and slice the output back to the original T. This matches Applio's
+`mel2hidden` pattern exactly, and is handled by `PitchExtractor.extract` for
+the common path. (Earlier versions padded T by 32 zeros INSIDE the graph —
+that caused the "garbage" padded frames to leak into real frames through the
+decoder's 3×3 convs, producing a ~3% RMS drift vs PyTorch. See
+docs/handoff/04-11-2026-audit-results.md §3 and the follow-up investigation.)
+
 Pipeline:
-  1. Pad T by PAD_T (static=32) so the U-Net decoder always produces T' >= T
-  2. Initial BN (baked scale/offset)
-  3. Encoder: 5 levels × 4 residual blocks + AvgPool2d(2,2) downsampling
+  1. Initial BN (baked scale/offset)
+  2. Encoder: 5 levels × 4 residual blocks + AvgPool2d(2,2) downsampling
      Skips saved BEFORE each pool (pre-pool output)
-  4. Bottleneck: 16 residual blocks (no spatial change)
-  5. Decoder: 5 levels
+  3. Bottleneck: 16 residual blocks (no spatial change)
+  4. Decoder: 5 levels
        - Numerically-correct ConvTranspose2d via zero-interleave + regular conv
-       - BN after ConvTranspose
+       - BN + ReLU after ConvTranspose
        - Slice skip to decoder spatial, concat on channel axis
        - 4 residual blocks
-  6. Output CNN: 16→3 channels, 3×3 conv
-  7. Slice T' back to original T
-  8. Reshape [1, T, 128, 3] → [1, T, 384]
+  5. Output CNN: 16→3 channels, 3×3 conv
+  6. Reshape [1, T, 128, 3] → transpose to [1, T, 3, 128] → [1, T, 384]
+     matching PyTorch's transpose(1,2).flatten(-2) ordering.
 
 Weight format (PyTorch → MAX NHWC):
   Conv2d:
@@ -34,11 +44,10 @@ Weight format (PyTorch → MAX NHWC):
   Bias [C_out] → reshape to [1,1,1,C_out] for NHWC broadcasting
   BN scale/offset [C] → reshape to [1,1,1,C] for NHWC broadcasting
 
-Residual block:
-  h = relu(BN1(conv1(x)))
-  h = BN2(conv2(h))
+Residual block (matches PyTorch ConvBlockRes):
+  h = conv1 → BN1 → relu → conv2 → BN2 → relu
   sc = shortcut_conv(x)  if shortcut weights exist, else x
-  output = relu(h + sc)
+  output = h + sc   # no final relu on the sum
 
 ConvTranspose2d implementation note:
   ops.conv2d_transpose is broken in this MAX version (cannot lower to LLVM:
@@ -60,9 +69,10 @@ import numpy as np
 from max.graph import Graph, TensorType, ops, DeviceRef, Dim
 from max.dtype import DType
 
-# Static padding added to T (time) dim before the U-Net.
-# Guarantees that after 5 halvings + 5 doublings, T' >= T for all T >= 1.
-PAD_T = 32
+# T granularity required by the encoder (5 halvings) / decoder (5 doublings).
+# Callers that have a non-divisible T must reflect-pad to the next multiple of
+# T_MULTIPLE before calling the graph (see module docstring).
+T_MULTIPLE = 32
 
 
 def _pt_to_max_conv(w: np.ndarray) -> np.ndarray:
@@ -286,15 +296,7 @@ def build_unet_graph(
         "rmvpe_unet",
         input_types=[TensorType(DType.float32, [1, Dim("T"), 128, 1], device_ref)],
     ) as g:
-        x = g.inputs[0]  # [1, T, 128, 1]
-
-        # Remember original T before any padding
-        orig_T = x.shape[1]  # Dim("T")
-
-        # Pad T by PAD_T (static) so decoder always produces T' >= T
-        # pad layout: [N_bef, N_aft, H_bef, H_aft, W_bef, W_aft, C_bef, C_aft]
-        x = ops.pad(x, [0, 0, 0, PAD_T, 0, 0, 0, 0])
-        # x: [1, T+PAD_T, 128, 1]
+        x = g.inputs[0]  # [1, T, 128, 1] — caller guarantees T % 32 == 0
 
         # --- Initial encoder BN ---
         x = _bn_add(x, weights["enc_bn.scale"], weights["enc_bn.offset"], device_ref)
@@ -306,12 +308,12 @@ def build_unet_graph(
                 x = _residual_block(x, f"enc.{L}.{B}", weights, device_ref)
             skips.append(x)  # save BEFORE pool
             x = ops.avg_pool2d(x, kernel_size=(2, 2), stride=(2, 2))
-        # x: [1, (T+PAD_T)//32, 4, 256]
+        # x: [1, T/32, 4, 256]
 
         # --- Bottleneck: 16 blocks ---
         for I in range(16):
             x = _residual_block(x, f"btl.{I}", weights, device_ref)
-        # x: [1, (T+PAD_T)//32, 4, 512]
+        # x: [1, T/32, 4, 512]
 
         # --- Decoder: 5 levels ---
         for L in range(5):
@@ -331,13 +333,13 @@ def build_unet_graph(
                 )
             x = ops.relu(x)
 
-            # Skip concat from encoder level (4-L)
+            # Skip concat from encoder level (4-L). Because T is a multiple of 32
+            # on entry, encoder pool and decoder upsample are exact inverses and
+            # dec_H/dec_W equal skip_H/skip_W — the slice is a no-op but we keep
+            # it so the graph is robust if the input contract is ever loosened.
             skip = skips[4 - L]
             dec_H = x.shape[1]
             dec_W = x.shape[2]
-            # Slice skip to decoder spatial size.  The skip is always >= decoder
-            # because encoder pools with floor division (T // 2^k) while the
-            # decoder doubles (2H), so dec_H <= skip_H for all T >= 1.
             skip = ops.slice_tensor(
                 skip,
                 [slice(None), slice(None, dec_H), slice(None, dec_W), slice(None)],
@@ -347,20 +349,21 @@ def build_unet_graph(
             # 4 residual blocks
             for B in range(4):
                 x = _residual_block(x, f"dec.{L}.{B}", weights, device_ref)
-        # x: [1, H', W', 16]  where H' >= T, W' = 128
+        # x: [1, T, 128, 16]
 
         # --- Output CNN: 16→3, 3×3, same padding ---
         out_w = _pt_to_max_conv(weights["out_cnn.w"])
         out_b = weights.get("out_cnn.b")
         x = _conv2d(x, out_w, out_b, stride=(1, 1), padding=(1, 1, 1, 1), device_ref=device_ref)
-        # x: [1, H', W', 3]
-
-        # Slice T dimension back to original T
-        x = ops.slice_tensor(
+        # x: [1, (T/32)*32, 128, 3] — the symbolic T dim is written as the
+        # product of the 5 pools and 5 upsamples; MAX can't prove this equals
+        # the input Dim("T") without help. Assert it explicitly. This is safe
+        # because the graph precondition is T % 32 == 0 (enforced by the caller).
+        x = ops.rebind(
             x,
-            [slice(None), slice(0, orig_T), slice(None), slice(None)],
+            [1, Dim("T"), 128, 3],
+            message="rmvpe_unet: reconcile encoder/decoder T dim with input T (requires T % 32 == 0)",
         )
-        # x: [1, T, 128, 3] (NHWC)
 
         # Transpose to [1, T, 3, 128] to match PyTorch's flatten order
         # PyTorch: [1, 3, T, 128] → transpose(1,2) → [1, T, 3, 128] → flatten(-2) → [1, T, 384]

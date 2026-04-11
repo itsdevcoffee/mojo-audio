@@ -137,7 +137,7 @@ class PitchExtractor:
             [T_frames] float32 — F0 in Hz, 0.0 = unvoiced. ~100 frames/second.
         """
         from max.driver import Accelerator, Buffer
-        from ._rmvpe import bigru_forward, linear_output, salience_to_hz
+        from ._rmvpe import bigru_forward, linear_output, salience_to_hz, T_MULTIPLE
 
         # Step 1: mel [1, N] → [1, 1, T, 128]
         mel = _mel_spectrogram(audio)
@@ -145,7 +145,20 @@ class PitchExtractor:
         # Step 2: reshape to NHWC [1, T, 128, 1] for MAX Graph
         mel_nhwc = np.ascontiguousarray(mel.transpose(0, 2, 3, 1))  # [1, 1, T, 128] → [1, T, 128, 1]
 
-        # Step 3: U-Net MAX Graph [1, T, 128, 1] → [1, T, 384]
+        # Step 3: pad T to next multiple of T_MULTIPLE using reflect padding (Applio's pattern).
+        # This replaces the unconditional zero-pad that used to live inside the graph.
+        # Zero-padding caused ~3% RMS drift vs PyTorch because the garbage-padded
+        # frames leaked into real positions through decoder 3×3 convs; reflect padding
+        # matches Applio's torch.nn.functional.pad(mode="reflect") exactly.
+        orig_T = mel_nhwc.shape[1]
+        pad_T = (T_MULTIPLE - orig_T % T_MULTIPLE) % T_MULTIPLE
+        if pad_T > 0:
+            mel_nhwc = np.pad(
+                mel_nhwc, ((0, 0), (0, pad_T), (0, 0), (0, 0)), mode="reflect"
+            )
+            mel_nhwc = np.ascontiguousarray(mel_nhwc)
+
+        # Step 4: U-Net MAX Graph [1, T_padded, 128, 1] → [1, T_padded, 384]
         if isinstance(self._device, Accelerator):
             inp = Buffer.from_numpy(mel_nhwc).to(self._device)
         else:
@@ -153,11 +166,15 @@ class PitchExtractor:
         result = self._unet_model.execute(inp)
         features = (list(result.values())[0] if isinstance(result, dict) else result[0]).to_numpy()
 
-        # Step 4: BiGRU [1, T, 384] → [1, T, 512]
+        # Step 5: trim back to the original T before the BiGRU pass
+        if pad_T > 0:
+            features = features[:, :orig_T, :]
+
+        # Step 6: BiGRU [1, T, 384] → [1, T, 512]
         gru_out = bigru_forward(features, self._weights)
 
-        # Step 5: Linear [1, T, 512] → [1, T, 360]
+        # Step 7: Linear [1, T, 512] → [1, T, 360]
         salience = linear_output(gru_out, self._weights)
 
-        # Step 6: Salience → Hz [T]
+        # Step 8: Salience → Hz [T]
         return salience_to_hz(salience, threshold=threshold)
