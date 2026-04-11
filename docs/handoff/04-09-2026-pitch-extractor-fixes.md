@@ -12,7 +12,7 @@
 
 ## What Happened This Session
 
-Started with a systematic quality check of all tests on DGX Spark. Found and fixed **9 bugs** in the PitchExtractor (RMVPE) pipeline. The MAX U-Net graph now perfectly matches PyTorch (correlation 1.0), and end-to-end F0 extraction went from completely broken (39 Hz on 188 Hz voice) to functional (208.9 Hz, 97.3% voicing agreement, ~165 cent mean error).
+Started with a systematic quality check of all tests on DGX Spark. Found and fixed **9 bugs** in the PitchExtractor (RMVPE) pipeline. End-to-end F0 extraction went from completely broken (39 Hz on 188 Hz voice) to functional. A follow-up audit the same day found a 10th bug — the `PAD_T=32` unconditional zero-pad inside the U-Net graph was leaking garbage into real frames through decoder 3×3 convs, producing ~3% RMS drift that was originally misattributed to float32 accumulation in the numpy BiGRU. After moving the padding outside the graph (reflect-pad in the caller, matching Applio's `mel2hidden` exactly), the entire MAX pipeline is **bit-exact with PyTorch** — salience correlation 1.000000, max_diff 0.000000 on random mel, median cent error 0.13 on real voice. See [audit](04-11-2026-audit-results.md) §10–§11 for the investigation and fix.
 
 ---
 
@@ -54,10 +54,10 @@ Started with a systematic quality check of all tests on DGX Spark. Found and fix
 
 | Component | Status | Evidence |
 |-----------|--------|----------|
-| U-Net graph (encoder+bottleneck+decoder+CNN) | **Perfect match** | Correlation 1.0, max diff 0.000026 vs PyTorch |
-| BiGRU (numpy) | **Near match** | Correlation 0.978 on random input (float32 accumulation over ~200 timesteps) |
+| U-Net graph (encoder+bottleneck+decoder+CNN) | **Bit-exact match** (post-fix) | Layer-by-layer corr=1.000000, max_diff ~1e-5 (float32 noise). Earlier claim in this doc of "correlation 1.0, max_diff 2.6e-5" was accidentally correct for the wrong reason — see [audit](04-11-2026-audit-results.md) §3 for the drift that was masked by an xfail, and §10–§11 for the root-cause investigation and PAD_T fix. |
+| BiGRU (numpy) | **Bit-exact** | Max_diff 3.3e-6 at T=64 vs PyTorch nn.GRU on real rmvpe.pt weights — corrects earlier claim that BiGRU was the source of divergence |
 | Bins-to-Hz | **Fixed** | Uses Applio's cents mapping |
-| End-to-end F0 (real voice) | **Functional** | 97.3% voicing agreement, mean 165 cent error, F0 208.9 vs 188.2 Hz |
+| End-to-end F0 (real voice) | **Bit-exact match** (post-fix) | Salience correlation 1.000000, max_diff 0.000000 vs PyTorch E2E. On real 3s voice clip: median cent error 0.13, 96% of frames within 5 cents, 99.4% within 50 cents. The pre-fix "~165 cent mean error" is gone. See audit §11. |
 
 ### Test results (all on Spark)
 
@@ -73,15 +73,11 @@ Started with a systematic quality check of all tests on DGX Spark. Found and fix
 
 ### High priority — remaining PitchExtractor gap
 
-1. **Mel spectrogram alignment** — The ~165 cent mean F0 error on real voice comes from librosa vs torchaudio mel spectrogram differences. Our `_mel_spectrogram()` in `src/models/pitch_extractor.py` uses librosa. Applio's `MelSpectrogram` class in `rvc/lib/predictors/RMVPE.py` uses a custom torchaudio-based implementation with different parameters:
-   - Different `fmax`: ours uses 2006.0, Applio uses 8000
-   - Potentially different window/normalization behavior
-   - Aligning these should close the remaining F0 gap
-   
-2. **xfail test threshold** — The xfail `test_salience_matches_pytorch` has correlation 0.978 (threshold 0.99). The gap is float32 accumulation in the numpy BiGRU over ~200 timesteps with random noise input. Options:
-   - Relax threshold to 0.95 and remove xfail
-   - Use real mel input instead of random noise (model behavior is more stable on in-distribution data)
-   - Accept 0.978 as good enough and update the xfail reason
+1. **Mel spectrogram alignment** — ✅ DONE in commit `3d9b1ef` (after this doc was written). Our `_mel_spectrogram()` now uses the Applio-style STFT → magnitude → mel → log pipeline with fmin=30, fmax=8000, HTK scale, reflect padding, no normalization. `test_mel_matches_applio` passes with max_diff 2e-6 and correlation 1.0.
+
+2. **U-Net drift (PAD_T zero-pad contamination)** — ✅ FIXED during the 04-11 audit follow-up. The `PAD_T=32` unconditional zero-pad at the top of the graph was leaking garbage into real frames through decoder 3×3 convs. Moved the padding outside the graph (reflect-pad in `PitchExtractor.extract`, matching Applio's `mel2hidden`). After the fix: U-Net layer-by-layer corr 1.000000, salience max_diff 0.000000, end-to-end median cent error on real voice 0.13 (down from ~165). See [audit](04-11-2026-audit-results.md) §10–§11.
+
+3. **xfail test removed** — `test_salience_matches_pytorch` no longer xfails. Post-fix correlation is 1.000000 and max_diff 0.000000 on the random-noise input. The old xfail reason attributed the gap to "float32 accumulation in the numpy BiGRU" — that was wrong; the numpy BiGRU is bit-exact (max_diff 3.3e-6 at T=64). The gap was in the U-Net itself, specifically the PAD_T contamination.
 
 3. **Redeploy Shade** — The fixes need to be deployed to the running Shade instance:
    ```bash
