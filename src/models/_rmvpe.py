@@ -166,10 +166,17 @@ def _conv2d(x, w_np: np.ndarray, b_np, stride, padding, device_ref):
         w_mat = w_np.reshape(kH * kW * C_in, C_out).astype(np.float32)
         w_const = ops.constant(w_mat, device=device_ref)
 
-        # matmul: [1, H, W, kH*kW*C_in] × [kH*kW*C_in, C_out] → [1, H, W, C_out]
-        out = ops.matmul(x_cols, w_const)
+        # Flatten H and W into a single dim before the matmul. The rank-4 ×
+        # rank-2 matmul ([1,H,W,K²·C_in] @ [K²·C_in,C_out]) hits the GPU bmm
+        # multistage_gemm dispatch path, which inserts a rebind that fails
+        # with a rank-3↔rank-4 mismatch (KGEN error on MAX dev2026032005
+        # through dev2026041520). Collapsing to rank 3 routes through the
+        # well-tested rank-3 bmm path — same trick HiFiGAN's im2col uses.
+        x_flat = ops.reshape(x_cols, [1, -1, kH * kW * C_in])
+        out_flat = ops.matmul(x_flat, w_const)  # [1, H*W, C_out]
 
-        # Rebind to reconcile symbolic dims after slicing
+        # Reshape back to NHWC and reconcile symbolic dims with the input.
+        out = ops.reshape(out_flat, [1, x.shape[1], x.shape[2], C_out])
         out = ops.rebind(
             out,
             [x.shape[0], x.shape[1], x.shape[2], C_out],

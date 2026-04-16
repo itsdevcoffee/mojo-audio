@@ -287,6 +287,31 @@ class TestUNetGraph:
         diff = np.abs(max_out - ref).max()
         assert diff < 1e-4, f"ConvTranspose diff {diff:.2e} exceeds tolerance"
 
+    def test_unet_graph_compiles_on_gpu(self):
+        """build_unet_graph must compile on GPU.
+
+        Regression for a KGEN bmm rebind rank-3↔rank-4 mismatch in the GPU
+        matmul dispatch path that blocked PitchExtractor from running on
+        Spark GPU. Reproduced on MAX dev2026032005 through dev2026041520.
+        Single isolated _conv2d calls compile fine — the bug only surfaces
+        in the deeper U-Net stack, so this test exercises the full graph.
+        """
+        from max.driver import accelerator_count
+        if accelerator_count() == 0:
+            pytest.skip("no GPU accelerator available")
+
+        from max import engine
+        from max.driver import Accelerator
+        from max.graph import DeviceRef
+        from models._rmvpe import build_unet_graph
+
+        weights = self._make_full_random_weights()
+        graph = build_unet_graph(weights, DeviceRef.GPU())
+
+        # Compilation is the assertion — must not raise.
+        model = engine.InferenceSession(devices=[Accelerator()]).load(graph)
+        assert model is not None
+
 
 class TestBiGRU:
     """BiGRU numpy implementation tests."""
