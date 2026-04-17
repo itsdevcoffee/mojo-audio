@@ -2,7 +2,10 @@
 
 **Context:** Sprints 1–5 complete. Shade live on Spark CPU at RTF 0.63x.
 PitchExtractor GPU compile fix landed 04-16 (`f6eb128`). Dual-Spark NCCL
-bandwidth issue resolved by Chris. This doc captures everything outstanding.
+bandwidth issue resolved by Chris. VITS GPU placement fix + AudioEncoder
+`ops.tile` bake landed 04-17 (`4158680`, `25c521a`) — full pipeline now
+executes on Spark GPU; remaining active work is perf (item #3) and end-to-end
+RTF measurement (item #4).
 
 ---
 
@@ -12,20 +15,20 @@ These are the next things to land, in order. Each unblocks the next.
 
 | # | Task | Est. | Blocker? | Files |
 |---|---|---|---|---|
-| 1 | **VITS tensor-placement fix** — `convert_from_features()` passes numpy arrays to GPU-compiled `enc_p_model.execute()` and `flow_model.execute()`. Wrap with `Tensor.from_numpy().to(device)`. Same for `flow_model`. | 30 min | Yes — blocks full pipeline on GPU | `src/models/voice_converter.py` |
-| 2 | **AudioEncoder `ops.tile` → baked numpy constant** — lines 195/199 in `audio_encoder.py` use `ops.tile` which silently transfers to CPU on GPU (flagged by MAX dev2026041520 as TODO(GEX-2056)). Pre-tile gamma/beta in numpy. | 10 min | No — perf only | `src/models/audio_encoder.py` |
+| 1 | ✅ **VITS tensor-placement fix** (done 2026-04-17, commit `4158680`) — `convert_from_features()` now wraps numpy inputs via `Buffer.from_numpy(...).to(self._device)` on GPU. Full VITS path executes on Spark GPU; 49/49 CPU + GPU tests pass. | 30 min | — | `src/models/voice_converter.py` |
+| 2 | ✅ **AudioEncoder `ops.tile` → baked numpy constant** (done 2026-04-17, commit `25c521a`) — Pre-tiled gamma/beta as `[B*C, 1]` numpy constants. 35/35 tests pass on Spark GPU. **Measured no RTF improvement** (590.6ms → 590.3ms on 5s input); MAX likely constant-folds `ops.tile` of a compile-time-constant input, so the "silent CPU fallback" (GEX-2056) never fires for this call site. Still worth keeping — removes a known-problematic op pattern. | 10 min | — | `src/models/audio_encoder.py` |
 | 3 | **HiFiGAN + PitchExtractor GPU perf** — both compile and run on GPU but are slower than CPU (HiFiGAN RTF 2.15 vs CPU ~0.2; PitchExtractor RTF 0.40 vs CPU 0.11). Root cause: im2col workaround creates large intermediates that thrash GPU memory. Fix path: swap to native `ops.conv2d` on aarch64 (04-11 audit verified the C_in≥8 bug is fixed there). Profile before/after. | ~1 week | No — perf only | `src/models/_rmvpe.py`, `src/models/_hifigan_graph.py` |
-| 4 | **Full pipeline end-to-end GPU RTF** — run real Shade input (Weeknd 30s vocal) through `VoiceConverter.convert()` on GPU. Report warm RTF. Compare vs CPU 0.63x baseline. This number tells the demo story. | 1 hr | After 1–3 | — |
+| 4 | **Full pipeline end-to-end GPU RTF** — run real Shade input (Weeknd 30s vocal) through `VoiceConverter.convert()` on GPU. Report warm RTF. Compare vs CPU 0.63x baseline. This number tells the demo story. Unblocked now that #1 shipped. | 1 hr | After #3 (or do now w/ current perf) | — |
 
-### GPU matrix (04-16 recon, post-fix)
+### GPU matrix (04-17 update)
 
 | Stage | Compile | Run | RTF (GPU) | RTF (CPU) | Status |
 |---|---|---|---|---|---|
-| AudioEncoder | ✅ | ✅ | 0.24 | — | Working |
+| AudioEncoder | ✅ | ✅ | 0.12 | — | Working (5s @16k, 10-run mean; was 0.24 on 04-16 recon — improvement source unclear, not from the `ops.tile` bake) |
 | PitchExtractor | ✅ | ✅ | 0.40 | 0.11 | Fixed 04-16 — needs perf |
 | HiFiGAN | ✅ | ✅ | 2.15 | ~0.2 | Working — needs perf |
-| VITS enc_p + flow | ✅ | ❌ | — | — | Placement bug (#1 above) |
-| Full VoiceConverter | ⏳ | — | — | — | Blocked on #1 |
+| VITS enc_p + flow | ✅ | ✅ | — | — | Fixed 04-17 (`4158680`) |
+| Full VoiceConverter | ✅ compile | ⏳ RTF | — | 0.63 | Runs end-to-end on GPU, no RTF measurement yet |
 
 ---
 
