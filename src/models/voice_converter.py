@@ -426,10 +426,14 @@ class VoiceConverter:
         )
 
         # 9. enc_p graph → mean [B, 192, T], logvar [B, 192, T], mask [B, 1, T]
-        inputs = [features, pitch_i32, lengths]
+        inputs = [
+            self._to_device_tensor(features),
+            self._to_device_tensor(pitch_i32),
+            self._to_device_tensor(lengths),
+        ]
         for i in range(enc_p_cfg["n_layers"]):
-            inputs.append(biases_k[i])
-            inputs.append(biases_v[i])
+            inputs.append(self._to_device_tensor(biases_k[i]))
+            inputs.append(self._to_device_tensor(biases_v[i]))
 
         enc_result = self._enc_p_model.execute(*inputs)
         mean, logvar, enc_mask = self._unpack_3(enc_result)
@@ -438,7 +442,10 @@ class VoiceConverter:
         z_p = sample_z_p(mean, logvar, enc_mask, noise_scale=noise_scale)
 
         # 11. flow (reverse) → z [B, 192, T]
-        flow_result = self._flow_model.execute(z_p, enc_mask)
+        flow_result = self._flow_model.execute(
+            self._to_device_tensor(z_p),
+            self._to_device_tensor(enc_mask),
+        )
         z = self._unpack_1(flow_result)
 
         # 12. Apply mask
@@ -450,6 +457,19 @@ class VoiceConverter:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _to_device_tensor(self, arr: np.ndarray):
+        """Wrap a numpy array as a device Buffer when running on GPU.
+
+        MAX graphs compiled for GPU reject CPU tensors at ``execute()``. On CPU
+        the array is passed through unchanged. Mirrors the pattern used by
+        AudioEncoder, PitchExtractor, and NSFHiFiGAN.
+        """
+        from max.driver import Accelerator, Buffer
+
+        if isinstance(self._device, Accelerator):
+            return Buffer.from_numpy(np.ascontiguousarray(arr)).to(self._device)
+        return arr
 
     @staticmethod
     def _unpack_1(result) -> np.ndarray:
