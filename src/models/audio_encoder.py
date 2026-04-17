@@ -188,17 +188,17 @@ class AudioEncoder:
                     var_ = ops.mean(ops.mul(diff_, diff_), axis=1)            # [B*C, 1]
                     std_ = ops.sqrt(ops.add(var_, EPS_GN))                    # [B*C, 1]
                     normed_ = ops.div(diff_, std_)                            # [B*C, T']
-                    # gamma/beta: [C] → tile to [B*C, 1] by repeating B times
-                    gamma_1d = _const(weights[norm_w_key])                    # [C]
-                    beta_1d = _const(weights[f"cnn.{i}.norm.bias"])           # [C]
-                    gamma_tiled = ops.reshape(
-                        ops.tile(ops.reshape(gamma_1d, [1, c_out]), [batch_size, 1]),
-                        [batch_size * c_out, 1],                              # [B*C, 1]
-                    )
-                    beta_tiled = ops.reshape(
-                        ops.tile(ops.reshape(beta_1d, [1, c_out]), [batch_size, 1]),
-                        [batch_size * c_out, 1],
-                    )
+                    # gamma/beta baked as [B*C, 1] numpy constants. ops.tile falls
+                    # back to CPU on GPU (MAX TODO(GEX-2056)), so pre-tiling in numpy
+                    # at graph-build time avoids the host↔device bounce per CNN layer.
+                    gamma_np = weights[norm_w_key]                            # [C]
+                    beta_np = weights[f"cnn.{i}.norm.bias"]                   # [C]
+                    gamma_tiled = _const(
+                        np.tile(gamma_np, batch_size).reshape(batch_size * c_out, 1)
+                    )                                                         # [B*C, 1]
+                    beta_tiled = _const(
+                        np.tile(beta_np, batch_size).reshape(batch_size * c_out, 1)
+                    )                                                         # [B*C, 1]
                     gn_out = ops.add(ops.mul(normed_, gamma_tiled), beta_tiled)  # [B*C, T']
                     # Reshape back: [B*C, T'] → [B, C, T'] → transpose(1,2) → [B, T', C]
                     conv_out = ops.transpose(
