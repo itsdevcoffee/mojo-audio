@@ -1,0 +1,113 @@
+{
+  "metadata": {
+    "timestamp": "2026-04-18T06:11:51+00:00",
+    "git_commit": "9474285",
+    "git_branch": "main",
+    "max_version": "unknown",
+    "platform": "aarch64",
+    "hostname": "visage-spark",
+    "mojo_device": "gpu",
+    "applio_device": "auto",
+    "python_version": "3.13.12",
+    "run_type": "mojo-only"
+  },
+  "results": [
+    {
+      "model_name": "the-weeknd",
+      "model_path": "/home/visage/repos/shade/models/the-weeknd/model.pth",
+      "audio_file": "0_0_0.wav",
+      "audio_duration_s": 3.0,
+      "status": "ok",
+      "applio": {
+        "skipped": "mojo-only mode"
+      },
+      "mojo": {
+        "load_s": 9.35,
+        "hubert_s": 0.528,
+        "rmvpe_s": 0.069,
+        "vits_s": 0.504,
+        "overhead_s": 0.0,
+        "total_s": 1.101,
+        "rtf": 0.367
+      }
+    },
+    {
+      "model_name": "ariana-grande",
+      "model_path": "/home/visage/repos/shade/models/ariana-grande/model.pth",
+      "audio_file": "0_0_0.wav",
+      "audio_duration_s": 3.0,
+      "status": "ok",
+      "applio": {
+        "skipped": "mojo-only mode"
+      },
+      "mojo": {
+        "load_s": 66.955,
+        "hubert_s": 0.529,
+        "rmvpe_s": 0.045,
+        "vits_s": 0.37,
+        "overhead_s": 0.0,
+        "total_s": 0.943,
+        "rtf": 0.314
+      }
+    },
+    {
+      "model_name": "adele",
+      "model_path": "/home/visage/repos/shade/models/adele/model.pth",
+      "audio_file": "0_0_0.wav",
+      "audio_duration_s": 3.0,
+      "status": "ok",
+      "applio": {
+        "skipped": "mojo-only mode"
+      },
+      "mojo": {
+        "load_s": 246.079,
+        "hubert_s": 0.53,
+        "rmvpe_s": 0.046,
+        "vits_s": 0.475,
+        "overhead_s": 0.01,
+        "total_s": 1.06,
+        "rtf": 0.353
+      }
+    },
+    {
+      "model_name": "frank-sinatra",
+      "model_path": "/home/visage/repos/shade/models/frank-sinatra/model.pth",
+      "audio_file": "0_0_0.wav",
+      "audio_duration_s": 3.0,
+      "status": "ok",
+      "applio": {
+        "skipped": "mojo-only mode"
+      },
+      "mojo": {
+        "load_s": 286.08,
+        "hubert_s": 0.531,
+        "rmvpe_s": 0.101,
+        "vits_s": 0.592,
+        "overhead_s": 0.0,
+        "total_s": 1.225,
+        "rtf": 0.408
+      }
+    },
+    {
+      "model_name": "sza",
+      "model_path": "/home/visage/repos/shade/models/sza/model.pth",
+      "audio_file": "0_0_0.wav",
+      "audio_duration_s": 3.0,
+      "status": "mojo_failed",
+      "applio": {
+        "skipped": "mojo-only mode"
+      },
+      "mojo": {
+        "error": "ValueError: Failed to create op 'matmul':\nInputs:\n    input_x = TensorValue(dtype=float32, shape=[Dim(1), Dim('T'), Dim(768)], device=gpu:0)\n    input_y = TensorValue(dtype=float32, shape=[Dim(256), Dim(192)], device=gpu:0)\n\nDiagnostics:\n    \nOperation creation failed:\nerror: unknown: Matrix multiplication input lhs (shape [1, T, 768]) dimension at axis -1 (value 768) must match input rhs (shape [256, 192]) dimension at axis -2 (value 256)"
+      }
+    }
+  ],
+  "summary": {
+    "models_tested": 5,
+    "models_ok": 4,
+    "models_failed": 1,
+    "mean_rtf_mojo": 0.36,
+    "min_rtf_mojo": 0.314,
+    "max_rtf_mojo": 0.408
+  }
+}
