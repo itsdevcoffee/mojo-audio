@@ -4,14 +4,40 @@
 PitchExtractor GPU compile fix landed 04-16 (`f6eb128`). Dual-Spark NCCL
 bandwidth issue resolved by Chris. VITS GPU placement fix + AudioEncoder
 `ops.tile` bake landed 04-17 (`4158680`, `25c521a`) — full pipeline now
-executes on Spark GPU; remaining active work is perf (item #3) and end-to-end
-RTF measurement (item #4).
+executes on Spark GPU at **RTF 0.39 (3.49x faster than CPU)**. First formal
+Applio comparison completed 04-17 (see §Benchmarks).
 
 ---
 
-## Active — GPU Campaign
+## Priority 1 — GPU Production Benchmarks
 
-These are the next things to land, in order. Each unblocks the next.
+GPU is how Shade runs in production. CPU comparisons are context; GPU numbers
+are the demo story. Full pipeline E2E measured at **RTF 0.39 on GPU** (3.49x
+faster than CPU) on 04-17 with a single model.
+
+| # | Task | Est. | Status |
+|---|---|---|---|
+| 1 | **GPU-only benchmark suite** — run `benchmark_suite.py run --mojo-only --mojo-device gpu` across 5-6 validated v2 models. Skip Applio to halve memory. Produces the per-model GPU RTF table. | 1 hr | Ready |
+| 2 | **Fix OOM during batch runs** — full 23-model suite with both engines OOM-killed Spark. Mitigations: skip Applio (`--mojo-only`), limit concurrent models, add memory cleanup between models (`gc.collect()`, `torch.cuda.empty_cache()` if applicable). | 30 min | Ready |
+| 3 | **RVC v1 model support** — `brent-faiyaz`, `giveon` fail (256 hidden channels vs v2's 768). Either add v1 support to mojo-audio or flag them as incompatible. | Days | Deferred |
+
+## Priority 2 — Multi-Spark Voice Conversion (Sprint 6)
+
+Dual-Spark cluster repo: `~/repos/visage-maximus-tag-team` (both Sparks).
+Infrastructure: Ray cluster (port 6380), NCCL over QSFP, pm2/systemd
+supervision, endpoints.yaml. Chris resolved NCCL bandwidth 04-15.
+
+| # | Task | Notes |
+|---|---|---|
+| 1 | **Add Shade to endpoints.yaml** — register mojo-audio API as a supervised endpoint (pm2 on visage, systemd optional on maximus). Replaces the current nohup deployment. Survives reboots. | Quick win — pattern exists for vLLM endpoints |
+| 2 | **Ray request routing** — dispatch `/convert` requests to whichever Spark has capacity. Doubles throughput for concurrent users without model sharding. Simpler than DistributedTransformer. | Requires mojo-audio API running on both Sparks |
+| 3 | **Model sharding across both GPUs** — shard VITS via `max.nn.DistributedTransformer` or pipeline parallelism. Reduces per-request latency (vs routing which only helps throughput). | Hard — needs NCCL bandwidth to be real (currently capped at 1.5 GB/s) |
+
+---
+
+## Completed — GPU Campaign
+
+Items 1-2 done. Items 3-4 are perf optimization (deferred to after benchmarks).
 
 | # | Task | Est. | Blocker? | Files |
 |---|---|---|---|---|
@@ -28,7 +54,41 @@ These are the next things to land, in order. Each unblocks the next.
 | PitchExtractor | ✅ | ✅ | 0.40 | 0.11 | Fixed 04-16 — needs perf |
 | HiFiGAN | ✅ | ✅ | 2.15 | ~0.2 | Working — needs perf |
 | VITS enc_p + flow | ✅ | ✅ | — | — | Fixed 04-17 (`4158680`) |
-| Full VoiceConverter | ✅ compile | ⏳ RTF | — | 0.63 | Runs end-to-end on GPU, no RTF measurement yet |
+| Full VoiceConverter | ✅ | ✅ | **0.39** | 1.37 (5s) | **3.49x GPU speedup.** Measured 04-17 on 5s @16kHz Weeknd 48k checkpoint. |
+
+### Benchmark: mojo-audio vs Applio (04-17, CPU, 3s real vocal, Weeknd 48k)
+
+| Metric | Applio | mojo-audio | |
+|---|---|---|---|
+| HuBERT/ContentVec | 0.233s | 0.099s | **2.34x faster** |
+| RMVPE (F0) | 0.419s | 0.256s | **1.64x faster** |
+| VITS synth | 1.799s | 2.054s | 0.88x (im2col tax) |
+| **Total (warm)** | **2.722s** | **2.409s** | **1.13x faster** |
+| RTF | 0.91x | 0.80x | |
+| F0 voicing agreement | — | — | **100%** |
+| F0 cent error (mean/median) | — | — | **0.28 / 0.03** |
+| F0 within 5 cents | — | — | **99.3%** |
+| Waveform corr | — | — | 0.059 (see notes) |
+| RMS diff | — | — | +13 dB (mojo louder) |
+| Spectrogram corr | — | — | 0.73 |
+
+**Quality notes:** F0 is near-perfect. Low waveform correlation is from: (1) no
+output RMS normalization in mojo-audio (+13 dB), (2) stochastic z_p sampling
+(different random noise each run), (3) simplified NSF harmonic source (numpy
+sine vs PyTorch SineGen, 0.66 corr full pipeline). Scripts:
+`scripts/compare_vs_applio.py`, `scripts/benchmark_applio_baseline.py`.
+
+---
+
+## Active — Quality Parity
+
+Close the measured gaps between mojo-audio and Applio output quality.
+
+| # | Task | Est. | Impact | Files |
+|---|---|---|---|---|
+| 1 | **Output RMS normalization** — match output RMS to input RMS (Applio's `volume_envelope` feature). Will eliminate the +13 dB gap and likely improve waveform/spectrogram correlation significantly. | 30 min | High — biggest quality gap | `src/models/voice_converter.py` |
+| 2 | **Deterministic z_p sampling** — accept optional `seed` param in `convert()` / `convert_from_features()` for reproducible output. Not needed in production but critical for fair A/B comparison and debugging. | 15 min | Medium — comparison only | `src/models/voice_converter.py` |
+| 3 | **FAISS index retrieval** — speaker similarity blending. Applio uses `index_rate=0.75` in production Shade. Without this, mojo-audio's output is purely from the learned speaker embedding (no retrieval augmentation). | Days | Medium — quality feature | New file + `voice_converter.py` |
 
 ---
 
@@ -102,7 +162,8 @@ These are the next things to land, in order. Each unblocks the next.
 | MAX bug filed (conv2d groups) — `modular/modular#6129` | ✅ |
 | MAX bug filed (conv2d C_in≥8) — `modular/modular#6248` | ✅ Filed, pending comment update |
 | RMVPE working on Spark GPU | ✅ (04-16) |
-| Full pipeline on Spark GPU | ⏳ VITS placement fix away |
-| Shade demo (music industry, private beta) | ⏳ Live on CPU, GPU RTF needed for real-time |
+| Full pipeline on Spark GPU | ✅ (04-17) — RTF 0.39, 3.49x faster than CPU |
+| mojo-audio vs Applio formal comparison | ✅ (04-17) — 1.13x faster CPU, F0 within 0.28 cents |
+| Shade demo (music industry, private beta) | ⏳ Live on CPU; GPU deploy needs Shade API update |
 | Blog: conv2d bugs in MAX | Not started |
 | Blog pitch to Modular | Not started |
