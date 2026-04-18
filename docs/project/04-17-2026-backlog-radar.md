@@ -1,129 +1,78 @@
-# mojo-audio Backlog Radar — 2026-04-17
+# mojo-audio Backlog Radar — 2026-04-18
 
-**Context:** Sprints 1–5 complete. Shade live on Spark CPU at RTF 0.63x.
-PitchExtractor GPU compile fix landed 04-16 (`f6eb128`). Dual-Spark NCCL
-bandwidth issue resolved by Chris. VITS GPU placement fix + AudioEncoder
-`ops.tile` bake landed 04-17 (`4158680`, `25c521a`) — full pipeline now
-executes on Spark GPU at **RTF 0.39 (3.49x faster than CPU)**. First formal
-Applio comparison completed 04-17 (see §Benchmarks).
+**Context:** Sprints 1–5 complete. Full mojo-audio pipeline runs on Spark
+GPU at RTF 0.36 (mean across 4 models). However, Applio GPU runs at RTF
+0.15 — **2.4x faster** — because mojo-audio's im2col conv workaround tanks
+GPU throughput vs PyTorch's native cuDNN conv kernels. **Decision (04-18):
+Shade stays on Applio for production. mojo-audio continues development;
+switch when benchmarks match or beat Applio.** Dual-Spark NCCL resolved.
 
 ---
 
-## Priority 1 — GPU Production Benchmarks
+## Priority 1 — Shade Production on Applio + Dual-Spark Job Routing
 
-GPU is how Shade runs in production. CPU comparisons are context; GPU numbers
-are the demo story. Full pipeline E2E measured at **RTF 0.39 on GPU** (3.49x
-faster than CPU) on 04-17 with a single model.
+Shade runs Applio (PyTorch CUDA) for voice conversion in production. The
+immediate work is making this production-ready across both Sparks with
+proper job routing, supervision, retry logic, and monitoring.
 
 | # | Task | Est. | Status |
 |---|---|---|---|
-| 1 | **GPU-only benchmark suite** — run `benchmark_suite.py run --mojo-only --mojo-device gpu` across 5-6 validated v2 models. Skip Applio to halve memory. Produces the per-model GPU RTF table. | 1 hr | Ready |
-| 2 | **Fix OOM during batch runs** — full 23-model suite with both engines OOM-killed Spark. Mitigations: skip Applio (`--mojo-only`), limit concurrent models, add memory cleanup between models (`gc.collect()`, `torch.cuda.empty_cache()` if applicable). | 30 min | Ready |
-| 3 | **RVC v1 model support** — `brent-faiyaz`, `giveon` fail (256 hidden channels vs v2's 768). Either add v1 support to mojo-audio or flag them as incompatible. | Days | Deferred |
+| 1 | **Revert Shade to Applio** — change `services/rvc.py` back to `USE_APPLIO=1` or Applio-direct. Confirm Shade API returns to Applio GPU perf (RTF ~0.15). | 15 min | Ready |
+| 2 | **Add Shade to endpoints.yaml** — register Shade API as a supervised endpoint in `visage-maximus-tag-team`. pm2 on visage, systemd on maximus. Replaces nohup. Survives reboots. | 1 hr | Ready |
+| 3 | **Dual-Spark job routing** — dispatch `/convert` requests across both Sparks (visage + maximus). Load balancing, health checks, retry on failure. Options: Ray, custom FastAPI proxy, or Caddy/nginx reverse proxy with health. | Design needed | See §Discussion below |
+| 4 | **Job tracking + retry** — track conversion jobs (queued, running, completed, failed). Retry failed jobs. Expose status via API for frontend. | Design needed | See §Discussion below |
+| 5 | **Shade frontend deployment** — fix `BODY_SIZE_LIMIT=Infinity` persistence, systemd/pm2 for the Node frontend. | 30 min | Ready |
 
-## Priority 2 — Multi-Spark Voice Conversion (Sprint 6)
+### Shade Applio GPU benchmark (04-18, 3s real vocal)
 
-Dual-Spark cluster repo: `~/repos/visage-maximus-tag-team` (both Sparks).
-Infrastructure: Ray cluster (port 6380), NCCL over QSFP, pm2/systemd
-supervision, endpoints.yaml. Chris resolved NCCL bandwidth 04-15.
-
-| # | Task | Notes |
-|---|---|---|
-| 1 | **Add Shade to endpoints.yaml** — register mojo-audio API as a supervised endpoint (pm2 on visage, systemd optional on maximus). Replaces the current nohup deployment. Survives reboots. | Quick win — pattern exists for vLLM endpoints |
-| 2 | **Ray request routing** — dispatch `/convert` requests to whichever Spark has capacity. Doubles throughput for concurrent users without model sharding. Simpler than DistributedTransformer. | Requires mojo-audio API running on both Sparks |
-| 3 | **Model sharding across both GPUs** — shard VITS via `max.nn.DistributedTransformer` or pipeline parallelism. Reduces per-request latency (vs routing which only helps throughput). | Hard — needs NCCL bandwidth to be real (currently capped at 1.5 GB/s) |
-
----
-
-## Completed — GPU Campaign
-
-Items 1-2 done. Items 3-4 are perf optimization (deferred to after benchmarks).
-
-| # | Task | Est. | Blocker? | Files |
-|---|---|---|---|---|
-| 1 | ✅ **VITS tensor-placement fix** (done 2026-04-17, commit `4158680`) — `convert_from_features()` now wraps numpy inputs via `Buffer.from_numpy(...).to(self._device)` on GPU. Full VITS path executes on Spark GPU; 49/49 CPU + GPU tests pass. | 30 min | — | `src/models/voice_converter.py` |
-| 2 | ✅ **AudioEncoder `ops.tile` → baked numpy constant** (done 2026-04-17, commit `25c521a`) — Pre-tiled gamma/beta as `[B*C, 1]` numpy constants. 35/35 tests pass on Spark GPU. **Measured no RTF improvement** (590.6ms → 590.3ms on 5s input); MAX likely constant-folds `ops.tile` of a compile-time-constant input, so the "silent CPU fallback" (GEX-2056) never fires for this call site. Still worth keeping — removes a known-problematic op pattern. | 10 min | — | `src/models/audio_encoder.py` |
-| 3 | **HiFiGAN + PitchExtractor GPU perf** — both compile and run on GPU but are slower than CPU (HiFiGAN RTF 2.15 vs CPU ~0.2; PitchExtractor RTF 0.40 vs CPU 0.11). Root cause: im2col workaround creates large intermediates that thrash GPU memory. Fix path: swap to native `ops.conv2d` on aarch64 (04-11 audit verified the C_in≥8 bug is fixed there). Profile before/after. | ~1 week | No — perf only | `src/models/_rmvpe.py`, `src/models/_hifigan_graph.py` |
-| 4 | **Full pipeline end-to-end GPU RTF** — run real Shade input (Weeknd 30s vocal) through `VoiceConverter.convert()` on GPU. Report warm RTF. Compare vs CPU 0.63x baseline. This number tells the demo story. Unblocked now that #1 shipped. | 1 hr | After #3 (or do now w/ current perf) | — |
-
-### GPU matrix (04-17 update)
-
-| Stage | Compile | Run | RTF (GPU) | RTF (CPU) | Status |
-|---|---|---|---|---|---|
-| AudioEncoder | ✅ | ✅ | 0.12 | — | Working (5s @16k, 10-run mean; was 0.24 on 04-16 recon — improvement source unclear, not from the `ops.tile` bake) |
-| PitchExtractor | ✅ | ✅ | 0.40 | 0.11 | Fixed 04-16 — needs perf |
-| HiFiGAN | ✅ | ✅ | 2.15 | ~0.2 | Working — needs perf |
-| VITS enc_p + flow | ✅ | ✅ | — | — | Fixed 04-17 (`4158680`) |
-| Full VoiceConverter | ✅ | ✅ | **0.39** | 1.37 (5s) | **3.49x GPU speedup.** Measured 04-17 on 5s @16kHz Weeknd 48k checkpoint. |
-
-### Benchmark: mojo-audio vs Applio (04-17, CPU, 3s real vocal, Weeknd 48k)
-
-| Metric | Applio | mojo-audio | |
+| Model | Applio GPU RTF | mojo-audio GPU RTF | Applio advantage |
 |---|---|---|---|
-| HuBERT/ContentVec | 0.233s | 0.099s | **2.34x faster** |
-| RMVPE (F0) | 0.419s | 0.256s | **1.64x faster** |
-| VITS synth | 1.799s | 2.054s | 0.88x (im2col tax) |
-| **Total (warm)** | **2.722s** | **2.409s** | **1.13x faster** |
-| RTF | 0.91x | 0.80x | |
-| F0 voicing agreement | — | — | **100%** |
-| F0 cent error (mean/median) | — | — | **0.28 / 0.03** |
-| F0 within 5 cents | — | — | **99.3%** |
-| Waveform corr | — | — | 0.059 (see notes) |
-| RMS diff | — | — | +13 dB (mojo louder) |
-| Spectrogram corr | — | — | 0.73 |
-
-**Quality notes:** F0 is near-perfect. Low waveform correlation is from: (1) no
-output RMS normalization in mojo-audio (+13 dB), (2) stochastic z_p sampling
-(different random noise each run), (3) simplified NSF harmonic source (numpy
-sine vs PyTorch SineGen, 0.66 corr full pipeline). Scripts:
-`scripts/compare_vs_applio.py`, `scripts/benchmark_applio_baseline.py`.
+| the-weeknd | 0.154 | 0.367 | 2.4x |
+| ariana-grande | 0.151 | 0.314 | 2.1x |
+| adele | 0.144 | 0.353 | 2.5x |
+| frank-sinatra | 0.160 | 0.408 | 2.6x |
+| **Mean** | **0.152** | **0.360** | **2.4x** |
 
 ---
 
-## Active — Quality Parity
+## Priority 2 — mojo-audio Development (Switch When Ready)
 
-Close the measured gaps between mojo-audio and Applio output quality.
+mojo-audio is architecturally complete and numerically correct. The gap is
+GPU perf — im2col workaround vs native conv. Continue development; re-run
+benchmarks after each improvement or MAX nightly update. Switch Shade when
+`benchmark_suite.py` shows mojo-audio matching or beating Applio.
 
-| # | Task | Est. | Impact | Files |
-|---|---|---|---|---|
-| 1 | **Output RMS normalization** — match output RMS to input RMS (Applio's `volume_envelope` feature). Will eliminate the +13 dB gap and likely improve waveform/spectrogram correlation significantly. | 30 min | High — biggest quality gap | `src/models/voice_converter.py` |
-| 2 | **Deterministic z_p sampling** — accept optional `seed` param in `convert()` / `convert_from_features()` for reproducible output. Not needed in production but critical for fair A/B comparison and debugging. | 15 min | Medium — comparison only | `src/models/voice_converter.py` |
-| 3 | **FAISS index retrieval** — speaker similarity blending. Applio uses `index_rate=0.75` in production Shade. Without this, mojo-audio's output is purely from the learned speaker embedding (no retrieval augmentation). | Days | Medium — quality feature | New file + `voice_converter.py` |
+**Switch criteria:** mojo-audio GPU RTF ≤ Applio GPU RTF on the same models
+(currently need ~2.4x improvement).
 
----
+| # | Task | Impact | Notes |
+|---|---|---|---|
+| 1 | **Swap im2col → native `ops.conv2d` on aarch64** — 04-11 audit verified conv2d is fixed on aarch64 for C_in≥8. This is the single biggest RTF unlock. Profile per-layer. | High — closes most of 2.4x gap | `_rmvpe.py`, `_hifigan_graph.py` |
+| 2 | **Track MAX nightly fixes** — periodically bump MAX pin and re-run `benchmark_suite.py`. The bmm rebind bug, conv2d improvements, and new GPU kernel paths may close the gap for free. | Medium | `pixi.toml` |
+| 3 | **Output RMS normalization** — match output volume to input (Applio's volume_envelope). Biggest quality gap (+13 dB). | Quality | `voice_converter.py` |
+| 4 | **FAISS index retrieval** — speaker similarity blending. Applio uses index_rate=0.75 in production. | Quality | New file |
+| 5 | **RVC v1 support** — `sza`, `brent-faiyaz`, `giveon` fail (256 hidden channels). | Compatibility | `_vits_graph.py` |
+| 6 | **File MAX bugs** — ops.rebind GPU rank mismatch, update #6248 comment. | Community | — |
 
-## Deferred — Shade / Deployment
+### Benchmark scripts (ready to use)
 
-| Task | Est. | Notes |
-|---|---|---|
-| Systemd services for Shade API + frontend | 2 hrs | Currently nohup — doesn't survive reboots. Plan in `docs/plans/04-09-2026-shade-redeployment.md`. |
-| Docker image with MAX Engine | Days | Proper containerized deployment. Low priority while iterating. |
-| `/clean` and `/separate` endpoints | 1 hr | Need `noisereduce` + `audio-separator` in pixi env. pip install upgraded torch to 2.11.0 — may conflict. |
+```bash
+# mojo-audio GPU only (fast, no Applio needed)
+pixi run python scripts/benchmark_suite.py run --mojo-only --mojo-device gpu
 
----
+# Applio GPU baseline
+pixi run python scripts/benchmark_applio_baseline.py --model X --audio Y --device cuda:0
 
-## Deferred — MAX Engine Bugs
+# Head-to-head comparison (speed + quality)
+pixi run python scripts/compare_vs_applio.py --model X --audio Y --mojo-device gpu
 
-| Task | Status | Notes |
-|---|---|---|
-| File `ops.rebind` GPU rank mismatch | Ready to file | Minimal repro: `build_unet_graph` on GPU triggers; isolated `_conv2d` doesn't. Persisted 26+ nightlies (dev2026032005 → dev2026041520). We worked around it (`f6eb128`) but should file upstream. |
-| Comment on `modular/modular#6248` (conv2d C_in≥8) | Draft pending review | aarch64 fix confirmed, x64 still broken (byte-identical). K=7 slightly worse (0.191 vs 0.165). Multi-stride crash fixed on both. See `docs/handoff/04-11-2026-audit-results.md §4–5`. |
-| Close multi-stride conv2d crash | Done upstream | Fixed on both x64 and aarch64 as of dev2026041020. Just needs a "confirmed fixed" comment. |
-| Blog: "Every conv2d Bug We Hit in MAX" | Not started | Research doc ready from Sprint 3. Strong content opportunity. |
-| Blog post pitch to Modular | Not started | "Voice conversion on DGX Spark, zero PyTorch CUDA, 100% MAX Engine." |
+# View historical trends
+pixi run python scripts/benchmark_suite.py history
+```
 
----
+### Benchmark results
 
-## Deferred — Quality / Model Upgrades
-
-| Task | Priority | Notes |
-|---|---|---|
-| FAISS index retrieval (speaker similarity blending) | Medium | CPU-side bolt-on. Quality improvement for voice matching. |
-| Pitch protection blending | Low | Smoother pitch transitions. |
-| Relative position attention in-graph | Low | Currently numpy pre-pass duplicates encoder work. Functional but wasteful. |
-| BigVGAN vocoder swap | Exploratory | Potential quality upgrade over NSF-HiFiGAN. |
-| Seed-VC (zero-shot voice conversion) | Exploratory | No fine-tuning needed — single reference audio. |
-| RVC v3 / shallow diffusion | Exploratory | Next-gen model architectures. |
+First GPU run: `benchmarks/results/20260418T012214.json` (4 models, mean RTF 0.360).
 
 ---
 
@@ -131,27 +80,25 @@ Close the measured gaps between mojo-audio and Applio output quality.
 
 | Issue | Severity | Notes |
 |---|---|---|
-| HiFiGAN `batch>1` blocked (ConvTranspose1d zero-interleave requires B=1) | Medium | Blocks concurrent request processing (Sprint 6). |
+| HiFiGAN `batch>1` blocked (ConvTranspose1d zero-interleave requires B=1) | Medium | Blocks concurrent request processing. |
 | GroupNorm approximated as LayerNorm in CNN | Low | — |
 | ContentVec `weight_g/weight_v` detection robustness | Medium | Before shipping to external users. |
 | NSF-HiFiGAN harmonic source: simplified numpy sine (0.66 corr vs PyTorch SineGen) | Low | Neural filter itself is 0.9998 corr. |
-| Stale docstring at `_rmvpe.py:37-42` | Low | Pre-fix residual block structure still documented. Audit finding. |
+| Stale docstring at `_rmvpe.py:37-42` | Low | Pre-fix residual block structure still documented. |
 | Griffin-Lim lacks true complex phase | Low | — |
-| FFI exports for AudioEncoder | Low | Only if mojovoice needs VC. |
 
 ---
 
-## Deferred — Sprint 6: Multi-Spark NVLink
+## Deferred — Multi-Spark Model Sharding (Sprint 6)
 
-**Prerequisite:** GPU pipeline working on single Spark (items 1–4 above).
+Separate from job routing (Priority 1). This is about sharding a single
+model across both GPUs for lower per-request latency.
 
 | Task | Status | Notes |
 |---|---|---|
-| NCCL bandwidth issue | ✅ Resolved | Chris fixed this 04-15. visage-maximus-tag-team repo at `/home/visage/repos/visage-maximus-tag-team`. |
-| Shard VITS synthesis across 2 GPUs | Not started | `max.nn.DistributedTransformer`. 256GB unified memory pool. |
-| Batch processing concurrent voice conversions | Blocked | Needs HiFiGAN batch>1 fix first. |
-| Configure IPs on lowercase interface (`enp1s0f1np1`) | Not done | Prerequisite for dual-NIC NCCL. See `docs/handoff/04-11-2026-dual-spark-nccl-investigation.md`. |
-| Align Spark 2 driver to `580.142` | Not done | Next convenient reboot. |
+| NCCL bandwidth issue | ✅ Resolved | Chris fixed 04-15. |
+| Shard VITS via `max.nn.DistributedTransformer` | Not started | 256GB unified memory pool. |
+| Blocked by NCCL bandwidth for TP | Open | PP=2/TP=1 is the safe config. |
 
 ---
 
@@ -161,9 +108,8 @@ Close the measured gaps between mojo-audio and Applio output quality.
 |---|---|
 | MAX bug filed (conv2d groups) — `modular/modular#6129` | ✅ |
 | MAX bug filed (conv2d C_in≥8) — `modular/modular#6248` | ✅ Filed, pending comment update |
-| RMVPE working on Spark GPU | ✅ (04-16) |
-| Full pipeline on Spark GPU | ✅ (04-17) — RTF 0.39, 3.49x faster than CPU |
-| mojo-audio vs Applio formal comparison | ✅ (04-17) — 1.13x faster CPU, F0 within 0.28 cents |
-| Shade demo (music industry, private beta) | ⏳ Live on CPU; GPU deploy needs Shade API update |
+| Full mojo-audio pipeline on Spark GPU | ✅ (04-17) — RTF 0.36, 3.49x faster than CPU |
+| mojo-audio vs Applio formal GPU comparison | ✅ (04-18) — Applio 2.4x faster, im2col gap identified |
+| Shade production decision | ✅ (04-18) — stay on Applio until mojo-audio matches perf |
 | Blog: conv2d bugs in MAX | Not started |
 | Blog pitch to Modular | Not started |
