@@ -106,87 +106,12 @@ def _bn_add(x, scale: np.ndarray, offset: np.ndarray, device_ref):
 
 
 def _conv2d(x, w_np: np.ndarray, b_np, stride, padding, device_ref):
-    """Conv2d via im2col + matmul, avoiding ops.conv2d (broken for C_in >= 8).
+    """Native conv2d (was im2col; ops.conv2d fixed on aarch64 in MAX 26.4). Signature unchanged.
 
     w_np must already be in MAX [kH, kW, C_in, C_out] format.
-    Supports stride=(1,1) only (all RMVPE convolutions use stride 1).
-
-    For 1×1 convolutions, uses direct matmul (no im2col needed).
-    For k×k convolutions, extracts shifted patches along H and W axes,
-    concatenates into a column matrix, and multiplies by reshaped weight.
-
-    This replaces the previous ops.conv2d implementation which produces
-    incorrect results when C_in >= 8 (modular/modular#6248).
     """
-    kH, kW = w_np.shape[0], w_np.shape[1]
-    C_in = w_np.shape[2]
-    C_out = w_np.shape[3]
-
-    if kH == 1 and kW == 1:
-        w_2d = ops.constant(w_np.reshape(C_in, C_out), device=device_ref)
-        x_sq = ops.squeeze(x, 0)        # [H, W, C_in]
-        out = ops.matmul(x_sq, w_2d)    # [H, W, C_out]
-        out = ops.unsqueeze(out, 0)     # [1, H, W, C_out]
-    else:
-        # im2col + matmul for k×k conv with stride 1
-        assert stride == (1, 1), f"im2col conv2d only supports stride=1, got {stride}"
-
-        orig_H = x.shape[1]
-        orig_W = x.shape[2]
-
-        # Pad input: padding is (H_bef, H_aft, W_bef, W_aft)
-        pad_h_bef, pad_h_aft, pad_w_bef, pad_w_aft = padding
-        if any(p > 0 for p in padding):
-            x_pad = ops.pad(x, [
-                0, 0,                          # batch
-                pad_h_bef, pad_h_aft,          # H
-                pad_w_bef, pad_w_aft,          # W
-                0, 0,                          # C
-            ])
-        else:
-            x_pad = x
-
-        # im2col: for each (kh, kw), slice a [1, H, W, C_in] patch and concat
-        # along channel axis → [1, H, W, kH*kW*C_in]
-        slices = []
-        for kh in range(kH):
-            for kw in range(kW):
-                s = ops.slice_tensor(x_pad, [
-                    slice(None),
-                    slice(kh, kh + orig_H),
-                    slice(kw, kw + orig_W),
-                    slice(None),
-                ])
-                slices.append(s)
-
-        x_cols = ops.concat(slices, axis=3) if len(slices) > 1 else slices[0]
-        # x_cols: [1, H, W, kH*kW*C_in]
-
-        # Reshape weight: [kH, kW, C_in, C_out] → [kH*kW*C_in, C_out]
-        w_mat = w_np.reshape(kH * kW * C_in, C_out).astype(np.float32)
-        w_const = ops.constant(w_mat, device=device_ref)
-
-        # Flatten H and W into a single dim before the matmul. The rank-4 ×
-        # rank-2 matmul ([1,H,W,K²·C_in] @ [K²·C_in,C_out]) hits the GPU bmm
-        # multistage_gemm dispatch path, which inserts a rebind that fails
-        # with a rank-3↔rank-4 mismatch (KGEN error on MAX dev2026032005
-        # through dev2026041520). Collapsing to rank 3 routes through the
-        # well-tested rank-3 bmm path — same trick HiFiGAN's im2col uses.
-        x_flat = ops.reshape(x_cols, [1, -1, kH * kW * C_in])
-        out_flat = ops.matmul(x_flat, w_const)  # [1, H*W, C_out]
-
-        # Reshape back to NHWC and reconcile symbolic dims with the input.
-        out = ops.reshape(out_flat, [1, x.shape[1], x.shape[2], C_out])
-        out = ops.rebind(
-            out,
-            [x.shape[0], x.shape[1], x.shape[2], C_out],
-            message="conv2d im2col: reconcile H,W dims",
-        )
-
-    if b_np is not None:
-        b = ops.constant(b_np.reshape(1, 1, 1, -1), device=device_ref)
-        out = ops.add(out, b)
-    return out
+    from ._conv import conv2d as _native_conv2d
+    return _native_conv2d(x, w_np, b_np, stride=stride, padding=padding, device_ref=device_ref)
 
 
 def _conv_transpose_2x(x, w_pt: np.ndarray, b_np, device_ref):
@@ -198,6 +123,12 @@ def _conv_transpose_2x(x, w_pt: np.ndarray, b_np, device_ref):
     position, doubling the spatial dimensions: H → 2H, W → 2W.
 
     Output shape: [B, 2H, 2W, C_out]
+
+    NOTE: Cannot delegate to _conv.conv_transpose2d because the H dimension
+    (T/32 after encoder pooling) is a symbolic Dim("T")//32 that cannot be
+    converted to a Python int. _conv.conv_transpose2d calls int(x.shape[1])
+    which raises TypeError for symbolic dims. The RMVPE U-Net input T is
+    dynamic, so this hand-rolled version using symbolic ops is required.
 
     Implementation:
       1. Zero-interleave H: insert one zero row after each input row (including

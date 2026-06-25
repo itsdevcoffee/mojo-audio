@@ -39,9 +39,26 @@ def conv1d(x, w_pt, b_np, dilation=1, groups=1, device_ref=None):
 
 
 def conv2d(x, w_max, b_np, stride=(1, 1), padding=(0, 0, 0, 0), groups=1, device_ref=None):
-    """Direct native conv2d. w_max already MAX RSCF [kH,kW,C_in,C_out]."""
+    """Direct native conv2d. w_max already MAX RSCF [kH,kW,C_in,C_out].
+
+    For 1x1 kernels, uses matmul instead of ops.conv2d: ops.conv2d raises
+    'no kernel registered for layout_transform_RSCF_to_KNkni' for kH=kW=1
+    on CPU (aarch64 and x64). All other kernel sizes use native ops.conv2d.
+    """
+    w_max = np.asarray(w_max, dtype=np.float32)
+    kH, kW, C_in, C_out = w_max.shape
+    if kH == 1 and kW == 1:
+        # 1x1 via matmul: squeeze batch, [H,W,C_in] @ [C_in,C_out] -> [H,W,C_out]
+        w_2d = ops.constant(w_max.reshape(C_in, C_out), device=device_ref)
+        x_sq = ops.squeeze(x, 0)
+        out = ops.matmul(x_sq, w_2d)
+        out = ops.unsqueeze(out, 0)
+        if b_np is not None:
+            out = ops.add(out, ops.constant(
+                np.asarray(b_np, dtype=np.float32).reshape(1, 1, 1, -1), device=device_ref))
+        return out
     return ops.conv2d(
-        x, ops.constant(np.asarray(w_max, dtype=np.float32), device=device_ref),
+        x, ops.constant(w_max, device=device_ref),
         stride=stride, dilation=(1, 1), padding=padding, groups=groups,
         bias=_bias(b_np, device_ref),
     )
