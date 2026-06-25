@@ -4,7 +4,13 @@
 
 **Goal:** Replace the im2col+matmul convolution workaround with native MAX `ops.conv2d` / `ops.conv2d_transpose` in RMVPE, HiFiGAN, and VITS on the DGX Spark, closing the GPU perf gap vs Applio and removing the im2col numerical drift.
 
-**Architecture:** A single new module `src/models/_conv.py` provides native conv primitives (`conv1d`, `conv2d`, `conv_transpose1d`, `conv_transpose2d`). Each model's existing im2col helper is rewritten to delegate to it, keeping call-site signatures unchanged. A correctness probe validates the two unverified variants (dilated, transpose) on aarch64 before any swap; any variant that fails the probe keeps its im2col body.
+**Architecture:** A single new module `src/models/_conv.py` provides native conv primitives (`conv1d`, `conv2d`, `conv_transpose1d`, `conv_transpose2d`). Each model's existing im2col helper is rewritten to delegate to it, keeping call-site signatures unchanged.
+
+**PROBE OUTCOME (2026-06-25 — drives this plan):** native `ops.conv2d` on the Spark GPU (MAX 26.4) supports ONLY plain dilation=1. Native dilated conv ("non-unit dilation not supported yet") and native `ops.conv2d_transpose` (cuDNN ALLOC_FAILED) both FAIL. **Strategy: express-as-plain.** Every variant is reduced to native plain conv2d, validated correct (max_diff ~1–4e-5) and ~1.8x faster than im2col in Probe 2:
+- **Dilated conv** → expand kernel with `(d-1)` zeros between taps, then native dilation=1 conv2d with the larger kernel.
+- **ConvTranspose1d/2d** → zero-interleave the input, flip the kernel, then native plain conv2d.
+
+Because express-as-plain covers ALL variants, im2col is removed entirely — no fallback path remains. The exact validated constructions (weight layouts, kernel flips, zero-interleave op sequences, padding) are in `.superpowers/sdd/task-1b-report.md` §"Implementation Details (Reuse These in Migration)" — the migration MUST follow them verbatim.
 
 **Tech Stack:** Python, MAX `max.graph` (26.4 nightly), NumPy, PyTorch (ground truth), pytest, pixi.
 
@@ -14,8 +20,10 @@
 - **MAX version: 26.4.** `max = "==26.4.0.dev2026061006"`, `mojo = "==1.0.0b2.dev2026061006"`. The pipeline already runs on 26.4.
 - **torchvision stays stashed** at `/tmp/tv-stash` on the Spark (moved out of site-packages) so the Applio comparison harness imports cleanly. Do not restore it.
 - **Native weight layout:** PyTorch Conv `[C_out, C_in, K]` → MAX RSCF `[K, 1, C_in, C_out]` via the existing `_pt_weight_to_max` in `src/models/_feature_extractor.py:35`. Reuse it; do not reimplement.
-- **Correctness threshold:** native vs PyTorch `max_diff < 1e-5`.
-- **Probe-failure rule:** if a variant fails the probe, that variant keeps its im2col body, a MAX bug is filed referencing #6248, and the rest proceed. Never block the whole rewrite on one variant.
+- **Correctness threshold:** native vs PyTorch `max_diff < 1e-4` (GPU fp32 accumulation gives ~2–4e-5 at high fan-in; this is not a bug, confirmed in Probe 2 by linear scaling with C_in). A real failure is orders of magnitude larger or a kernel exception.
+- **Express-as-plain is mandatory** (native dilation + native transpose are broken on aarch64/26.4): dilated→kernel-expansion, transpose→zero-interleave, both via native plain conv2d. im2col is fully removed; there is no fallback path. Follow the validated constructions in `.superpowers/sdd/task-1b-report.md` §"Implementation Details" verbatim.
+- **`ops.transpose` is a 2-axis swap only** in MAX 26.4 — never use it for 4-axis permutations; use the reshape+pad+reshape chain from the probe report instead.
+- **MAX bugs to file** (tracked, not blocking): native dilated conv ("non-unit dilation not supported yet") and `ops.conv2d_transpose` (cuDNN ALLOC_FAILED on aarch64 NHWC). File after the rewrite lands.
 - **Reference impl already in tree:** `AudioEncoder` (`src/models/audio_encoder.py:174,246`) already calls native `ops.conv2d` with `stride=` and `groups=16` in production — follow its pattern.
 
 ### SYNC + TEST convention (used by every task)
@@ -75,6 +83,8 @@ Expected: `max 26.4.0.dev2026061006`, `mojo 1.0.0b2...`, and `imports OK`. If `t
 ---
 
 ### Task 1: Correctness probe for native conv variants
+
+> ✅ **DONE (2026-06-25, commits 05cb6be + 8752376).** Probe 1 found native dilated + transpose FAIL on aarch64; Probe 2 validated express-as-plain (all PASS, ~1.8x faster than im2col). Findings in `.superpowers/sdd/task-1-report.md` and `task-1b-report.md`. The architecture note and Task 2 above already reflect this. Kept below for provenance.
 
 **Files:**
 - Create: `scripts/probe_native_conv.py`
@@ -213,36 +223,38 @@ git commit -m "feat(probe): native conv variant correctness probe for aarch64"
 
 ---
 
-### Task 2: Shared native conv module `_conv.py`
+### Task 2: Shared native conv module `_conv.py` (express-as-plain)
 
 **Files:**
 - Create: `src/models/_conv.py`
 - Test: `tests/test_conv.py`
 
+**Authoritative reference:** `.superpowers/sdd/task-1b-report.md` §"Implementation Details (Reuse These in Migration)" contains the exact validated constructions (weight layouts, kernel flips, zero-interleave op sequences, padding). The code below transcribes them; if any detail differs, the report's validated version wins.
+
 **Interfaces:**
-- Consumes: `_pt_weight_to_max` from `src/models/_feature_extractor.py`.
+- Consumes: `_pt_weight_to_max` from `src/models/_feature_extractor.py` (`[C_out,C_in,K]` → RSCF `[K,1,C_in,C_out]`).
 - Produces:
-  - `conv1d(x, w_pt, b_np, dilation=1, groups=1, device_ref=None) -> TensorValue` — input NHWC `[B,T,1,C_in]`, PyTorch weight `[C_out,C_in,K]`, output `[B,T,1,C_out]` (same padding).
+  - `conv1d(x, w_pt, b_np, dilation=1, groups=1, device_ref=None) -> TensorValue` — NHWC `[B,T,1,C_in]`, PyTorch weight `[C_out,C_in,K]`, output `[B,T,1,C_out]`. Dilation via kernel expansion (native dilation is broken).
   - `conv2d(x, w_max, b_np, stride=(1,1), padding=(0,0,0,0), groups=1, device_ref=None) -> TensorValue` — weight already MAX RSCF `[kH,kW,C_in,C_out]`.
-  - `conv_transpose1d(x, w_pt, b_np, stride, device_ref=None) -> TensorValue` — PyTorch ConvT weight `[C_in,C_out,K]`, output `[B,T*stride,1,C_out]`.
-  - `conv_transpose2d(x, w_pt, b_np, stride=2, device_ref=None) -> TensorValue` — stride-2 K3 pad1 output_pad1, PyTorch weight `[C_in,C_out,3,3]`.
+  - `conv_transpose1d(x, w_pt, b_np, stride, device_ref=None) -> TensorValue` — PyTorch ConvT weight `[C_in,C_out,K]`, output `[B,T*stride,1,C_out]`. Zero-interleave + native plain conv2d.
+  - `conv_transpose2d(x, w_pt, b_np, stride=2, device_ref=None) -> TensorValue` — stride-2 K3 pad1 output_pad1, PyTorch weight `[C_in,C_out,3,3]`, H/W static. 2D zero-interleave + native plain conv2d.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
-Create `tests/test_conv.py`:
+Create `tests/test_conv.py` (follow the existing test files' import/path convention — check `tests/test_hifigan.py` for how `models` is made importable; the MAX exec idiom must match how `scripts/probe_native_conv.py` runs):
 ```python
 import numpy as np
-import pytest
 import torch
 import torch.nn.functional as F
 from max.driver import Accelerator
 from max.dtype import DType
 from max.engine import InferenceSession
-from max.graph import Graph, TensorType, DeviceRef, ops
+from max.graph import Graph, TensorType, DeviceRef
 from models import _conv
 
 DEV = DeviceRef.GPU()
 SESSION = InferenceSession(devices=[Accelerator()])
+THRESH = 1e-4  # GPU fp32 accumulation ~2-4e-5 at high fan-in (Probe 2 confirmed)
 
 
 def _exec(build, x):
@@ -261,26 +273,54 @@ def test_conv1d_dilated_matches_torch():
     xt = torch.from_numpy(x).squeeze(2).transpose(1, 2)
     yt = F.conv1d(xt, torch.from_numpy(w), torch.from_numpy(b),
                   padding=d * (K - 1) // 2, dilation=d).transpose(1, 2).unsqueeze(2).numpy()
-    assert np.abs(ym - yt).max() < 1e-5
+    assert np.abs(ym - yt).max() < THRESH
+
+
+def test_conv_transpose1d_matches_torch():
+    rng = np.random.default_rng(1)
+    C_in, C_out, K, S, T = 64, 64, 4, 2, 20
+    x = rng.standard_normal((1, T, 1, C_in)).astype(np.float32)
+    w = rng.standard_normal((C_in, C_out, K)).astype(np.float32)
+    b = rng.standard_normal((C_out,)).astype(np.float32)
+    ym = _exec(lambda inp: _conv.conv_transpose1d(inp, w, b, stride=S, device_ref=DEV), x)
+    xt = torch.from_numpy(x).squeeze(2).transpose(1, 2)
+    yt = F.conv_transpose1d(xt, torch.from_numpy(w), torch.from_numpy(b),
+                            stride=S, padding=(K - S) // 2).transpose(1, 2).unsqueeze(2).numpy()
+    n = min(ym.shape[1], yt.shape[1])
+    assert np.abs(ym[:, :n] - yt[:, :n]).max() < THRESH
+
+
+def test_conv_transpose2d_matches_torch():
+    rng = np.random.default_rng(2)
+    C_in, C_out, H, W = 32, 32, 8, 8
+    x = rng.standard_normal((1, H, W, C_in)).astype(np.float32)
+    w = rng.standard_normal((C_in, C_out, 3, 3)).astype(np.float32)
+    b = rng.standard_normal((C_out,)).astype(np.float32)
+    ym = _exec(lambda inp: _conv.conv_transpose2d(inp, w, b, stride=2, device_ref=DEV), x)
+    xt = torch.from_numpy(x).permute(0, 3, 1, 2)
+    yt = F.conv_transpose2d(xt, torch.from_numpy(w), torch.from_numpy(b),
+                            stride=2, padding=1, output_padding=1).permute(0, 2, 3, 1).numpy()
+    assert ym.shape == yt.shape and np.abs(ym - yt).max() < THRESH
 ```
 
-- [ ] **Step 2: Run the test, verify it fails**
+- [ ] **Step 2: Run the tests, verify they fail**
 
-Run SYNC, then:
+Run SYNC, then (note the cuDNN `LD_LIBRARY_PATH` from the probe report may be needed):
 ```bash
 ssh visage@visage-spark 'export PATH=$HOME/.pixi/bin:$PATH; cd ~/repos/mojo-audio && pixi run pytest tests/test_conv.py -v'
 ```
-Expected: FAIL with `ModuleNotFoundError: ... _conv` or `AttributeError: conv1d`.
+Expected: FAIL with `ModuleNotFoundError: ... _conv`.
 
 - [ ] **Step 3: Write `_conv.py`**
 
 Create `src/models/_conv.py`:
 ```python
-"""Native MAX conv primitives (ops.conv2d / ops.conv2d_transpose).
+"""Native MAX conv primitives via express-as-plain.
 
-Replaces the im2col+matmul workaround now that conv2d is correct on aarch64
-(modular/modular#6129 fixed; #6248 fixed on aarch64). Weight layout helper is
-shared with AudioEncoder via _pt_weight_to_max.
+Native ops.conv2d on aarch64/26.4 supports ONLY plain dilation=1 (native
+dilated conv and ops.conv2d_transpose are broken — see
+.superpowers/sdd/task-1b-report.md). So dilation is done by kernel expansion
+and transpose by zero-interleave, both reduced to native plain conv2d.
 """
 import numpy as np
 from max.graph import ops
@@ -291,63 +331,109 @@ def _bias(b_np, device_ref):
     return ops.constant(np.asarray(b_np, dtype=np.float32), device=device_ref) if b_np is not None else None
 
 
+def _dilate_kernel(w, d):
+    """Insert (d-1) zeros between taps: [C_out,C_in,K] -> [C_out,C_in,(K-1)*d+1]."""
+    if d == 1:
+        return np.asarray(w, dtype=np.float32)
+    C_out, C_in, K = w.shape
+    w_eff = np.zeros((C_out, C_in, (K - 1) * d + 1), dtype=np.float32)
+    w_eff[:, :, ::d] = w
+    return w_eff
+
+
 def conv1d(x, w_pt, b_np, dilation=1, groups=1, device_ref=None):
-    """Conv1d as conv2d with kernel (K,1). x: NHWC [B,T,1,C_in]. w_pt: [C_out,C_in,K]."""
-    C_out, C_in, K = w_pt.shape
-    w_max = _pt_weight_to_max(w_pt)  # [K,1,C_in,C_out]
-    pad = dilation * (K - 1) // 2
+    """Conv1d as native plain conv2d; dilation handled by kernel expansion.
+    x: NHWC [B,T,1,C_in]. w_pt: PyTorch [C_out,C_in,K]."""
+    w_eff = _dilate_kernel(np.asarray(w_pt, dtype=np.float32), dilation)
+    K_eff = w_eff.shape[2]
+    w_max = _pt_weight_to_max(w_eff)  # [K_eff,1,C_in,C_out]
+    pad = (K_eff - 1) // 2
     return ops.conv2d(
         x, ops.constant(w_max, device=device_ref),
-        stride=(1, 1), dilation=(dilation, 1),
+        stride=(1, 1), dilation=(1, 1),
         padding=(pad, pad, 0, 0), groups=groups, bias=_bias(b_np, device_ref),
     )
 
 
 def conv2d(x, w_max, b_np, stride=(1, 1), padding=(0, 0, 0, 0), groups=1, device_ref=None):
-    """Direct conv2d. w_max already MAX RSCF [kH,kW,C_in,C_out]."""
+    """Direct native conv2d. w_max already MAX RSCF [kH,kW,C_in,C_out]."""
     return ops.conv2d(
         x, ops.constant(np.asarray(w_max, dtype=np.float32), device=device_ref),
-        stride=stride, padding=padding, groups=groups, bias=_bias(b_np, device_ref),
+        stride=stride, dilation=(1, 1), padding=padding, groups=groups,
+        bias=_bias(b_np, device_ref),
     )
 
 
 def conv_transpose1d(x, w_pt, b_np, stride, device_ref=None):
-    """ConvTranspose1d as conv2d_transpose. w_pt: [C_in,C_out,K]. stride upsamples T."""
+    """ConvTranspose1d via zero-interleave + native plain conv2d.
+    w_pt: PyTorch [C_in,C_out,K]. x: NHWC [B,T,1,C_in]. B must be 1."""
+    w_pt = np.asarray(w_pt, dtype=np.float32)
     C_in, C_out, K = w_pt.shape
-    pad = (K - stride) // 2
-    w_rscf = np.transpose(w_pt[..., None], (2, 3, 0, 1)).copy()  # [K,1,C_in,C_out]
-    return ops.conv2d_transpose(
-        x, ops.constant(w_rscf, device=device_ref),
-        stride=(stride, 1), padding=(pad, pad, 0, 0),
-        output_paddings=(0, 0), bias=_bias(b_np, device_ref),
+    S = stride
+    w_flipped = w_pt[:, :, ::-1].copy()                          # convolution = flipped corr
+    w_max = np.transpose(w_flipped[..., None], (2, 3, 0, 1)).copy()  # [K,1,C_in,C_out]
+    T = x.shape[1]
+    x_sq = ops.squeeze(x, 0)                                     # [T,1,C_in]
+    x_ins = ops.unsqueeze(x_sq, 1)                               # [T,1,1,C_in]
+    x_pad = ops.pad(x_ins, [0, 0, 0, S - 1, 0, 0, 0, 0])        # [T,S,1,C_in]
+    x_merged = ops.reshape(x_pad, [T * S, 1, C_in])             # [T*S,1,C_in]
+    x_zi = ops.unsqueeze(x_merged, 0)                           # [1,T*S,1,C_in]
+    pad_left = (K + S - 2) // 2
+    pad_right = (K - S) // 2
+    return ops.conv2d(
+        x_zi, ops.constant(w_max, device=device_ref),
+        stride=(1, 1), dilation=(1, 1),
+        padding=(pad_left, pad_right, 0, 0), bias=_bias(b_np, device_ref),
     )
 
 
 def conv_transpose2d(x, w_pt, b_np, stride=2, device_ref=None):
-    """ConvTranspose2d stride=2 K3 pad1 output_pad1. w_pt: [C_in,C_out,3,3]."""
-    w_rscf = np.transpose(w_pt, (2, 3, 0, 1)).copy()  # [3,3,C_in,C_out]
-    return ops.conv2d_transpose(
-        x, ops.constant(w_rscf, device=device_ref),
-        stride=(stride, stride), padding=(1, 1, 1, 1),
-        output_paddings=(1, 1), bias=_bias(b_np, device_ref),
+    """ConvTranspose2d (S=2,K=3,P=1,output_pad=1) via 2D zero-interleave +
+    native plain conv2d. w_pt: PyTorch [C_in,C_out,3,3]. H,W must be STATIC
+    (RMVPE decoder dims are fixed). ops.transpose is 2-axis only — the
+    reshape/pad/reshape chain below is the validated 4D interleave."""
+    w_pt = np.asarray(w_pt, dtype=np.float32)
+    C_in, C_out, Kh, Kw = w_pt.shape
+    S = stride
+    w_flipped = w_pt[:, :, ::-1, ::-1].copy()
+    w_max = np.transpose(w_flipped, (2, 3, 0, 1)).copy()        # [Kh,Kw,C_in,C_out]
+    H = int(x.shape[1]); W = int(x.shape[2]); C = C_in
+    H_zi = (H - 1) * S + 1
+    W_zi = (W - 1) * S + 1
+    # H-axis interleave of [1,H,W,C]
+    xf = ops.reshape(x, [1, H, W * C])
+    xf = ops.unsqueeze(xf, 2)                                   # [1,H,1,W*C]
+    xf = ops.pad(xf, [0, 0, 0, 0, 0, S - 1, 0, 0])            # [1,H,S,W*C]
+    xf = ops.reshape(xf, [1, H * S, W * C])
+    xf = ops.slice_tensor(xf, [slice(None), slice(0, H_zi), slice(None)])
+    x_h = ops.reshape(xf, [1, H_zi, W, C])
+    # W-axis interleave (H_zi as batch axis)
+    xr = ops.reshape(x_h, [H_zi, W, 1, C])
+    xr = ops.pad(xr, [0, 0, 0, 0, 0, S - 1, 0, 0])            # [H_zi,W,S,C]
+    xr = ops.reshape(xr, [H_zi, W * S, C])
+    xr = ops.slice_tensor(xr, [slice(None), slice(0, W_zi), slice(None)])
+    x_zi = ops.reshape(xr, [1, H_zi, W_zi, C])
+    pad = Kh - 1 - 1  # K-1-P; for K=3,P=1 -> 1
+    return ops.conv2d(
+        x_zi, ops.constant(w_max, device=device_ref),
+        stride=(1, 1), dilation=(1, 1),
+        padding=(pad, pad, pad, pad), bias=_bias(b_np, device_ref),
     )
 ```
 
-> NOTE: if Task 1's probe found a different padding/output_paddings mapping for the transpose variants, use that exact mapping here. If a transpose variant FAILED the probe, leave its helper body raising `NotImplementedError("keep im2col — probe failed")` and the migration task keeps the old im2col helper for it.
-
-- [ ] **Step 4: Run the test, verify it passes**
+- [ ] **Step 4: Run the tests, verify they pass**
 
 Run SYNC, then:
 ```bash
 ssh visage@visage-spark 'export PATH=$HOME/.pixi/bin:$PATH; cd ~/repos/mojo-audio && pixi run pytest tests/test_conv.py -v'
 ```
-Expected: PASS.
+Expected: 3 PASS. If a transpose test shows a shape mismatch, reconcile against the probe report's validated padding (the report ran these exact shapes green).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/models/_conv.py tests/test_conv.py
-git commit -m "feat(conv): shared native ops.conv2d primitives module"
+git commit -m "feat(conv): native express-as-plain conv primitives (dilation=expansion, transpose=interleave)"
 ```
 
 ---
@@ -429,27 +515,26 @@ ssh visage@visage-spark 'export PATH=$HOME/.pixi/bin:$PATH; cd ~/repos/mojo-audi
 ```
 Expected: 15 passed, 1 xfailed (batch>1). Record.
 
-- [ ] **Step 2: Rewrite `conv1d` to delegate (with dilated fallback if probe failed)**
+- [ ] **Step 2: Rewrite `conv1d` to delegate**
 
-In `src/models/_hifigan_graph.py`, replace the body of `conv1d(x, w_np, b_np, dilation=1, device_ref=None)` (lines 151–end of function) with:
+In `src/models/_hifigan_graph.py`, replace the body of `conv1d(x, w_np, b_np, dilation=1, device_ref=None)` (lines 151–end of function) with the delegation below. The native `_conv.conv1d` handles dilation internally via kernel expansion, so no dilation branch is needed:
 ```python
 def conv1d(x, w_np, b_np, dilation=1, device_ref=None):
-    """Native Conv1d (was im2col). Signature unchanged."""
+    """Native Conv1d via express-as-plain (was im2col). Signature unchanged."""
     from ._conv import conv1d as _native_conv1d
     return _native_conv1d(x, w_np, b_np, dilation=dilation, device_ref=device_ref)
 ```
-IF the probe found dilated conv FAILS on aarch64: keep the original im2col body, rename it `_conv1d_im2col`, and make `conv1d` branch: `return _native_conv1d(...) if dilation == 1 else _conv1d_im2col(x, w_np, b_np, dilation, device_ref)`.
+Once `conv1d` and `conv_transpose_1d` delegate, delete the now-dead im2col helpers in this file (`_dilate_kernel` if duplicated, the old im2col body, and the `conv_transpose_1d` zero-interleave/im2col body) — express-as-plain leaves no fallback path. Keep `_pt_..._to_max`-style weight helpers only if still referenced.
 
 - [ ] **Step 3: Rewrite `conv_transpose_1d` to delegate**
 
 Replace the body of `conv_transpose_1d(x, w_pt, b_np, *, stride, device_ref)` (line 36) with:
 ```python
 def conv_transpose_1d(x, w_pt, b_np, *, stride, device_ref):
-    """Native ConvTranspose1d (was zero-interleave im2col). Signature unchanged."""
+    """Native ConvTranspose1d via zero-interleave + plain conv2d (was im2col). Signature unchanged."""
     from ._conv import conv_transpose1d
     return conv_transpose1d(x, w_pt, b_np, stride=stride, device_ref=device_ref)
 ```
-IF the probe found convT1d FAILS: skip this step, keep the im2col transpose.
 
 - [ ] **Step 4: Run the HiFiGAN suite on the Spark**
 
@@ -493,7 +578,7 @@ Inspect `_conv1d_bct` (line 45): it takes `[B,C,T]` ("bct"), converts to NHWC, c
     from ._conv import conv1d as _native_conv1d
     out_nhwc = _native_conv1d(x_nhwc, w_np, b_np, dilation=dilation, device_ref=device_ref)
 ```
-Leave the surrounding BCT↔NHWC layout conversion untouched. IF the probe found dilated conv FAILS: branch on `dilation == 1` exactly as in Task 4 Step 2, keeping the original im2col `conv1d` for dilation>1.
+Leave the surrounding BCT↔NHWC layout conversion untouched. The native `_conv.conv1d` handles dilation via kernel expansion, so the local im2col `conv1d` / `_conv1d_numpy` helpers in this file become dead — delete them after the delegation works.
 
 - [ ] **Step 3: Run the VITS suite on the Spark**
 
