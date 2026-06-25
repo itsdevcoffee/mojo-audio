@@ -26,10 +26,26 @@ def _dilate_kernel(w, d):
 
 def conv1d(x, w_pt, b_np, dilation=1, groups=1, device_ref=None):
     """Conv1d as native plain conv2d; dilation handled by kernel expansion.
-    x: NHWC [B,T,1,C_in]. w_pt: PyTorch [C_out,C_in,K]."""
+    x: NHWC [B,T,1,C_in]. w_pt: PyTorch [C_out,C_in,K].
+
+    For K_eff=1 (k=1 or post-dilation single tap), falls back to matmul:
+    ops.conv2d raises 'no kernel registered for layout_transform_RSCF_to_KNkni'
+    for 1x1 kernels on CPU (aarch64 and x64) — same issue as conv2d."""
     w_eff = _dilate_kernel(np.asarray(w_pt, dtype=np.float32), dilation)
     K_eff = w_eff.shape[2]
     w_max = _pt_weight_to_max(w_eff)  # [K_eff,1,C_in,C_out]
+    if K_eff == 1:
+        # 1x1 via matmul: x is [B,T,1,C_in], squeeze W dim -> [B,T,C_in]
+        # w_max is [1,1,C_in,C_out] -> reshape to [C_in,C_out]
+        C_in, C_out = w_eff.shape[1], w_eff.shape[0]
+        w_2d = ops.constant(w_max.reshape(C_in, C_out), device=device_ref)
+        x_sq = ops.squeeze(x, 2)        # [B,T,C_in]
+        out = ops.matmul(x_sq, w_2d)    # [B,T,C_out]
+        out = ops.unsqueeze(out, 2)     # [B,T,1,C_out]
+        if b_np is not None:
+            out = ops.add(out, ops.constant(
+                np.asarray(b_np, dtype=np.float32).reshape(1, 1, 1, -1), device=device_ref))
+        return out
     pad = (K_eff - 1) // 2
     return ops.conv2d(
         x, ops.constant(w_max, device=device_ref),

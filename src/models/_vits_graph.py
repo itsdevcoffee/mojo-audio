@@ -4,9 +4,10 @@ Implements:
   - TextEncoder (enc_p): phone/pitch embedding -> transformer encoder -> prior stats
   - Normalizing flow (reverse pass): WaveNet + ResidualCouplingLayer + Flip
 
-All convolutions use the im2col + matmul workaround from _hifigan_graph.py.
-Operations use channel-first [B, C, T] format internally, but the
-underlying conv1d expects NHWC [B, T, 1, C], so we transpose at boundaries.
+All convolutions delegate to native ops.conv2d via _conv.conv1d (dilation
+handled by kernel expansion, not im2col).  Operations use channel-first
+[B, C, T] format internally; the underlying conv1d expects NHWC [B, T, 1, C],
+so we transpose at boundaries.
 """
 
 from __future__ import annotations
@@ -16,7 +17,8 @@ import numpy as np
 from max.graph import Graph, TensorType, ops, DeviceRef, Dim
 from max.dtype import DType
 
-from models._hifigan_graph import conv1d, leaky_relu
+from models._hifigan_graph import leaky_relu
+from models._conv import conv1d as _native_conv1d
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +48,7 @@ def _conv1d_bct(x, w_np, b_np, dilation, device_ref):
     """Conv1d wrapper for BCT-format tensors.
 
     1. Transposes x from [B, C, T] -> [B, T, 1, C] (NHWC)
-    2. Calls the im2col conv1d from _hifigan_graph
+    2. Calls native _conv.conv1d (dilation handled by kernel expansion)
     3. Transposes result back from [B, T, 1, C] -> [B, C, T]
 
     Args:
@@ -60,7 +62,7 @@ def _conv1d_bct(x, w_np, b_np, dilation, device_ref):
         Output tensor in [B, C, T] format.
     """
     x_nhwc = _bct_to_nhwc(x)
-    out_nhwc = conv1d(x_nhwc, w_np, b_np, dilation=dilation, device_ref=device_ref)
+    out_nhwc = _native_conv1d(x_nhwc, w_np, b_np, dilation=dilation, device_ref=device_ref)
     return _nhwc_to_bct(out_nhwc)
 
 
