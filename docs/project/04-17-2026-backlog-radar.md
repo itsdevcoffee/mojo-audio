@@ -43,12 +43,16 @@ benchmarks after each improvement or MAX nightly update. Switch Shade when
 `benchmark_suite.py` shows mojo-audio matching or beating Applio.
 
 **Switch criteria:** mojo-audio GPU RTF ≤ Applio GPU RTF on the same models
-(currently need ~2.4x improvement).
+(currently need ~2.4x improvement from im2col baseline). **Shade perf bar
+(≤0.15) NOT met.** The express-as-plain rewrite (feat/native-conv2d, 06-25)
+regressed to RTF 3.28 — do not merge. Unblock when MAX fixes native dilated
+and transpose conv on aarch64 GPU.
 
 | # | Task | Impact | Notes |
 |---|---|---|---|
-| 1 | **Swap im2col → native `ops.conv2d` on aarch64** — 04-11 audit verified conv2d is fixed on aarch64 for C_in≥8. This is the single biggest RTF unlock. Profile per-layer. | High — closes most of 2.4x gap | `_rmvpe.py`, `_hifigan_graph.py` |
-| 2 | **Track MAX nightly fixes** — periodically bump MAX pin and re-run `benchmark_suite.py`. The bmm rebind bug, conv2d improvements, and new GPU kernel paths may close the gap for free. | Medium | `pixi.toml` |
+| 1 | ~~**Swap im2col → native `ops.conv2d` on aarch64**~~ | ~~High~~ | ✅ **MEASURED 06-25 — REGRESSION.** express-as-plain rewrite delivered RTF 3.282 (vs 0.423 im2col baseline) — **7.8x slower**. Root cause: MAX 26.4 does not fuse reshape/pad/transpose chains; each op is a separate GPU dispatch. Native dilated conv (`dilation>1`) and `ops.conv2d_transpose` remain broken on aarch64. im2col is still the faster path. Do NOT merge feat/native-conv2d. See `docs/benchmarks/06-19-2026-native-conv2d-results.md`. |
+| 1b | **File MAX bug: conv2d_transpose cuDNN ALLOC_FAILED on aarch64** | Blocker | Reproducer in task-1-report.md. Required for RTF to improve via native convT. Not yet filed. |
+| 2 | **Track MAX nightly fixes** — periodically bump MAX pin and re-run `benchmark_suite.py`. Watch for: native dilation>1 support, conv2d_transpose aarch64 fix, op fusion for reshape/pad chains. | High — real unlock | `pixi.toml` |
 | 3 | **Output RMS normalization** — match output volume to input (Applio's volume_envelope). Biggest quality gap (+13 dB). | Quality | `voice_converter.py` |
 | 4 | **FAISS index retrieval** — speaker similarity blending. Applio uses index_rate=0.75 in production. | Quality | New file |
 | 5 | **RVC v1 support** — `sza`, `brent-faiyaz`, `giveon` fail (256 hidden channels). | Compatibility | `_vits_graph.py` |
@@ -111,5 +115,7 @@ model across both GPUs for lower per-request latency.
 | Full mojo-audio pipeline on Spark GPU | ✅ (04-17) — RTF 0.36, 3.49x faster than CPU |
 | mojo-audio vs Applio formal GPU comparison | ✅ (04-18) — Applio 2.4x faster, im2col gap identified |
 | Shade production decision | ✅ (04-18) — stay on Applio until mojo-audio matches perf |
+| express-as-plain native conv2d rewrite measured | ✅ (06-25) — RTF 3.28, **7.8x regression** vs im2col; dilated+transpose still blocked by MAX 26.4 GPU bugs; feat/native-conv2d NOT merged |
+| MAX bug: conv2d_transpose cuDNN ALLOC_FAILED aarch64 | ❌ Not yet filed (reproducer ready in task-1-report.md) |
 | Blog: conv2d bugs in MAX | Not started |
 | Blog pitch to Modular | Not started |
